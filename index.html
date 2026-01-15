@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SSD1306 4-Level → 2 Bitmaps Converter</title>
+  <style>
+    :root { --gap: 12px; --pad: 14px; --radius: 14px; }
+    * { box-sizing: border-box; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+    body { margin: 0; padding: var(--pad); background: #111; color: #eee; }
+    h1 { font-size: 20px; margin: 0 0 var(--gap) 0; font-weight: 700; }
+    .panel { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: var(--radius); padding: var(--pad); margin-bottom: var(--gap); }
+    label { font-size: 13px; color: #bbb; display: block; margin-bottom: 6px; }
+    input[type="file"], select, button { background: #0f0f0f; color: #eee; border: 1px solid #2c2c2c; border-radius: 10px; padding: 10px 12px; }
+    button { cursor: pointer; }
+    button:hover { background: #151515; }
+    .row { display: grid; grid-template-columns: 1fr; gap: var(--gap); }
+    .row.two { grid-template-columns: 1fr 1fr; }
+    .controls { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--gap); align-items: end; }
+    .canvas-wrap { display: grid; grid-template-columns: 1fr; gap: var(--gap); }
+    .canvas-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: var(--gap); }
+    canvas { background: #000; border: 1px solid #333; border-radius: 8px; image-rendering: pixelated; width: 100%; height: auto; }
+    textarea { width: 100%; min-height: 240px; resize: vertical; background: #0f0f0f; color: #eee; border: 1px solid #2c2c2c; border-radius: 10px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 12px; }
+    .flex { display: flex; gap: var(--gap); align-items: center; }
+    .muted { color: #9aa; font-size: 12px; }
+    .nowrap { white-space: nowrap; }
+    .spacer { flex: 1; }
+    .hint { font-size: 12px; color: #9aa; }
+    .badge { display: inline-block; padding: 2px 8px; border: 1px solid #333; border-radius: 999px; font-size: 12px; color: #ccc; }
+  </style>
+</head>
+<body>
+  <h1>SSD1306 4-Level → 2 Bitmaps Converter</h1>
+
+  <div class="panel">
+    <div class="row two">
+      <div>
+        <label for="imgInput">Upload image (no resizing is applied)</label>
+        <input id="imgInput" type="file" accept="image/*" />
+      </div>
+      <div>
+        <label for="sizeSelect">OLED format (SSD1306)</label>
+        <select id="sizeSelect"></select>
+      </div>
+    </div>
+
+    <div class="hint" style="margin-top:8px;">
+      Image is quantized to 4 levels, then split into two B/W images:
+      <br/>• White → white in both
+      <br/>• Light gray → black in #1, white in #2
+      <br/>• Dark gray → white in #1, black in #2
+      <br/>• Black → black in both
+    </div>
+  </div>
+
+  <div class="panel canvas-wrap">
+    <div class="flex">
+      <div class="badge" id="dimBadge">128×64</div>
+      <div class="spacer"></div>
+      <span class="muted" id="status">No image loaded.</span>
+    </div>
+
+    <div class="canvas-grid">
+      <div>
+        <div class="muted" style="margin-bottom:6px;">Quantized 4-level (preview)</div>
+        <canvas id="canvas" width="128" height="64"></canvas>
+      </div>
+      <div>
+        <div class="muted" style="margin-bottom:6px;">Output #1 (B/W)</div>
+        <canvas id="canvasOut1" width="128" height="64"></canvas>
+      </div>
+      <div>
+        <div class="muted" style="margin-bottom:6px;">Output #2 (B/W)</div>
+        <canvas id="canvasOut2" width="128" height="64"></canvas>
+      </div>
+    </div>
+
+    <div class="flex">
+      <button id="quantizeBtn" title="Quantize current canvas to 4 grayscale levels">Quantize 4-level</button>
+      <button id="splitBtn" title="Split 4-level image into two B/W outputs">Split → 2×B/W</button>
+      <div class="spacer"></div>
+      <button id="convertBtn">Convert → 2 Byte Arrays</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="flex" style="margin-bottom:6px;">
+      <label class="nowrap" style="margin:0;">Output byte arrays</label>
+      <div class="spacer"></div>
+      <button id="copyBtn" title="Copy to clipboard">Copy</button>
+    </div>
+    <textarea id="output" spellcheck="false" placeholder="Click ‘Convert → 2 Byte Arrays’ to generate two arrays."></textarea>
+    <div class="hint" style="margin-top:6px;">
+      Format: vertical bytes, LSB at (x, y) = (0, 0), MSB at (0, 7); next byte LSB at (1, 0)… page by page (8-pixel high pages).
+    </div>
+  </div>
+
+  <script>
+    // Common SSD1306 formats (width × height). Heights are multiples of 8 (page height).
+    const COMMON_FORMATS = [
+      { w: 128, h: 64, label: "128×64 (default)" },
+      { w: 128, h: 32, label: "128×32" },
+      { w: 96,  h: 16, label: "96×16" },
+      { w: 64,  h: 48, label: "64×48" },
+      { w: 64,  h: 32, label: "64×32" },
+      { w: 24,  h: 24, label: "24×24" },
+      { w: 16,  h: 16, label: "16×16" },
+      { w: 8,   h: 8,  label: "8×8" }
+    ];
+
+    // ---- 4-level thresholds (edit if you want) ----
+    // avg <= T0 => BLACK
+    // T0 < avg <= T1 => DARK_GRAY
+    // T1 < avg <= T2 => LIGHT_GRAY
+    // avg > T2 => WHITE
+    const T0 = 63;
+    const T1 = 127;
+    const T2 = 191;
+
+    const LEVEL = Object.freeze({
+      BLACK: 0,
+      DARK: 1,
+      LIGHT: 2,
+      WHITE: 3
+    });
+
+    const imgInput = document.getElementById('imgInput');
+    const sizeSelect = document.getElementById('sizeSelect');
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    const canvasOut1 = document.getElementById('canvasOut1');
+    const ctxOut1 = canvasOut1.getContext('2d', { willReadFrequently: true });
+
+    const canvasOut2 = document.getElementById('canvasOut2');
+    const ctxOut2 = canvasOut2.getContext('2d', { willReadFrequently: true });
+
+    const output = document.getElementById('output');
+    const statusEl = document.getElementById('status');
+    const dimBadge = document.getElementById('dimBadge');
+
+    function populateFormats() {
+      sizeSelect.innerHTML = '';
+      COMMON_FORMATS.forEach((f, idx) => {
+        const opt = document.createElement('option');
+        opt.value = `${f.w}x${f.h}`;
+        opt.textContent = f.label || `${f.w}×${f.h}`;
+        if (idx === 0) opt.selected = true;
+        sizeSelect.appendChild(opt);
+      });
+    }
+
+    function parseWH(v) {
+      const [w, h] = v.split('x').map(n => parseInt(n, 10));
+      return { w, h };
+    }
+
+    function resizeAllCanvases(w, h) {
+      // main
+      canvas.width = w; canvas.height = h;
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
+
+      // outputs
+      canvasOut1.width = w; canvasOut1.height = h;
+      ctxOut1.fillStyle = '#000'; ctxOut1.fillRect(0, 0, w, h);
+
+      canvasOut2.width = w; canvasOut2.height = h;
+      ctxOut2.fillStyle = '#000'; ctxOut2.fillRect(0, 0, w, h);
+
+      dimBadge.textContent = `${w}×${h}`;
+      statusEl.textContent = `Canvases resized to ${w}×${h}`;
+    }
+
+    function drawImageNoScale(img) {
+      ctx.drawImage(img, 0, 0); // clipped if larger than canvas
+      statusEl.textContent = `Image drawn at native size (${img.naturalWidth}×${img.naturalHeight}), no scaling.`;
+    }
+
+    function avgToLevel(avg) {
+      if (avg <= T0) return LEVEL.BLACK;
+      if (avg <= T1) return LEVEL.DARK;
+      if (avg <= T2) return LEVEL.LIGHT;
+      return LEVEL.WHITE;
+    }
+
+    function levelToByte(level) {
+      // Preview shades on the quantized canvas
+      // BLACK=0, DARK≈85, LIGHT≈170, WHITE=255
+      if (level === LEVEL.BLACK) return 0;
+      if (level === LEVEL.DARK) return 85;
+      if (level === LEVEL.LIGHT) return 170;
+      return 255;
+    }
+
+    // Quantize the main canvas to 4 levels (in-place) and return a Uint8Array of per-pixel LEVEL codes.
+    function quantizeTo4LevelsAndGetMap() {
+      const w = canvas.width, h = canvas.height;
+      const imgData = ctx.getImageData(0, 0, w, h);
+      const d = imgData.data;
+      const map = new Uint8Array(w * h);
+
+      for (let p = 0, i = 0; i < d.length; i += 4, p++) {
+        const r = d[i], g = d[i + 1], b = d[i + 2];
+        const avg = (r + g + b) / 3;
+        const level = avgToLevel(avg);
+        map[p] = level;
+
+        const v = levelToByte(level);
+        d[i] = d[i + 1] = d[i + 2] = v;
+        d[i + 3] = 255;
+      }
+
+      ctx.putImageData(imgData, 0, 0);
+      statusEl.textContent = `Quantized to 4 levels using thresholds: ${T0}, ${T1}, ${T2}.`;
+      return map;
+    }
+
+    // Split 4-level map into two B/W images (also render previews), and return two boolean maps (0/1) for white pixels.
+    function splitToTwoBW(levelMap) {
+      const w = canvas.width, h = canvas.height;
+      const out1 = new Uint8Array(w * h); // 1=white, 0=black
+      const out2 = new Uint8Array(w * h);
+
+      const img1 = ctxOut1.createImageData(w, h);
+      const img2 = ctxOut2.createImageData(w, h);
+
+      for (let p = 0; p < levelMap.length; p++) {
+        const level = levelMap[p];
+
+        // Rules:
+        // white -> white on both
+        // light -> out1 black, out2 white
+        // dark  -> out1 white, out2 black
+        // black -> black on both
+        const w1 = (level === LEVEL.WHITE || level === LEVEL.DARK) ? 1 : 0;
+        const w2 = (level === LEVEL.WHITE || level === LEVEL.LIGHT) ? 1 : 0;
+
+        out1[p] = w1;
+        out2[p] = w2;
+
+        const v1 = w1 ? 255 : 0;
+        const v2 = w2 ? 255 : 0;
+
+        const i = p * 4;
+        img1.data[i] = img1.data[i + 1] = img1.data[i + 2] = v1; img1.data[i + 3] = 255;
+        img2.data[i] = img2.data[i + 1] = img2.data[i + 2] = v2; img2.data[i + 3] = 255;
+      }
+
+      ctxOut1.putImageData(img1, 0, 0);
+      ctxOut2.putImageData(img2, 0, 0);
+      statusEl.textContent = 'Split into two B/W output images.';
+      return { out1, out2 };
+    }
+
+    // Build SSD1306 bytes from a 1-bit map (Uint8Array, 1=white), page order, vertical bytes.
+    function buildSSD1306BitmapFromBWMap(bwMap) {
+      const w = canvas.width, h = canvas.height;
+      const bytes = [];
+
+      for (let pageY = 0; pageY < h; pageY += 8) {
+        for (let x = 0; x < w; x++) {
+          let byte = 0;
+          for (let bit = 0; bit < 8; bit++) {
+            const y = pageY + bit;
+            if (y >= h) break;
+            const p = y * w + x;
+            if (bwMap[p]) byte |= (1 << bit); // LSB at top
+          }
+          bytes.push(byte);
+        }
+      }
+      return bytes;
+    }
+
+    function toHexLines(bytes, perLine = 16) {
+      const hex = bytes.map(b => '0x' + b.toString(16).padStart(2, '0'));
+      const lines = [];
+      for (let i = 0; i < hex.length; i += perLine) {
+        lines.push('  ' + hex.slice(i, i + perLine).join(', '));
+      }
+      return lines.join(',\n');
+    }
+
+    function generateOutputTwo(bytes1, bytes2) {
+      const w = canvas.width, h = canvas.height;
+      const count = bytes1.length;
+
+      const name1 = `bitmap1_${w}x${h}`;
+      const name2 = `bitmap2_${w}x${h}`;
+
+      return `// SSD1306 bitmaps for ${w}x${h} (pages of 8px, vertical bytes, LSB at y=0)
+ // Total bytes per bitmap: ${count}
+
+#include <Tiny4kOLED.h>
+
+const uint8_t ${name1}[] PROGMEM = {
+${toHexLines(bytes1)}
+};
+
+const uint8_t ${name2}[] PROGMEM = {
+${toHexLines(bytes2)}
+};
+
+// Example usage with Tiny4kOLED:
+// oled.bitmap(0, 0, ${w}, ${h >> 3}, ${name1});
+// oled.bitmap(0, 0, ${w}, ${h >> 3}, ${name2});
+`;
+    }
+
+    // Keep latest computed maps so buttons work in any order.
+    let lastLevelMap = null;
+    let lastBW = null;
+
+    // Events
+    sizeSelect.addEventListener('change', () => {
+      const { w, h } = parseWH(sizeSelect.value);
+      resizeAllCanvases(w, h);
+      output.value = '';
+      lastLevelMap = null;
+      lastBW = null;
+    });
+
+    imgInput.addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+
+      const img = new Image();
+      img.onload = () => {
+        // Clear to black, then draw image without scaling
+        ctx.fillStyle = '#000';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        ctxOut1.fillStyle = '#000'; ctxOut1.fillRect(0, 0, canvasOut1.width, canvasOut1.height);
+        ctxOut2.fillStyle = '#000'; ctxOut2.fillRect(0, 0, canvasOut2.width, canvasOut2.height);
+
+        drawImageNoScale(img);
+
+        // Auto-run quantize + split (like your original auto-binarize)
+        lastLevelMap = quantizeTo4LevelsAndGetMap();
+        lastBW = splitToTwoBW(lastLevelMap);
+      };
+      img.onerror = () => { statusEl.textContent = 'Failed to load image.'; };
+
+      const reader = new FileReader();
+      reader.onload = (ev) => { img.src = ev.target.result; };
+      reader.readAsDataURL(file);
+    });
+
+    document.getElementById('quantizeBtn').addEventListener('click', () => {
+      lastLevelMap = quantizeTo4LevelsAndGetMap();
+      lastBW = null; // needs re-split
+      output.value = '';
+    });
+
+    document.getElementById('splitBtn').addEventListener('click', () => {
+      if (!lastLevelMap) lastLevelMap = quantizeTo4LevelsAndGetMap();
+      lastBW = splitToTwoBW(lastLevelMap);
+      output.value = '';
+    });
+
+    document.getElementById('convertBtn').addEventListener('click', () => {
+      if (!lastLevelMap) lastLevelMap = quantizeTo4LevelsAndGetMap();
+      if (!lastBW) lastBW = splitToTwoBW(lastLevelMap);
+
+      const bytes1 = buildSSD1306BitmapFromBWMap(lastBW.out1);
+      const bytes2 = buildSSD1306BitmapFromBWMap(lastBW.out2);
+
+      output.value = generateOutputTwo(bytes1, bytes2);
+      statusEl.textContent = `Converted to 2×${bytes1.length} bytes.`;
+    });
+
+    document.getElementById('copyBtn').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(output.value);
+        statusEl.textContent = 'Copied output to clipboard.';
+      } catch (e) {
+        statusEl.textContent = 'Copy failed. You can copy manually from the textbox.';
+      }
+    });
+
+    // Init
+    populateFormats();
+    const { w, h } = parseWH(sizeSelect.value || '128x64');
+    resizeAllCanvases(w, h);
+  </script>
+</body>
+</html>
