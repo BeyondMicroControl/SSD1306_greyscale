@@ -1,3 +1,3 @@
 # SSD1306 greyscale
 
-<a href="../index.html">TOOLS</a>
+<a href="https://beyondmicrocontrol.github.io/SSD1306_greyscale/index.html">TOOLS</a>
