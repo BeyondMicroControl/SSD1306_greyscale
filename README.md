@@ -1,10 +1,14 @@
 # SSD1306 greyscale
 
 Ever wondered how to display greyscale images on a dirt-cheap SSD1306 ?
-
 This is a test made on a tiny (display area 11x5.5mm) 64 x 32 resolution display.
 
 <img src="/res/20260115_184123.jpg">
+
+However it looks like a gimmick, the real use of greyscale considerably 
+- increases readability
+- masks disturbing aliasing artifacts
+- allows to percieve more detail in graphs and diagrams
 
 <a href="https://beyondmicrocontrol.github.io/SSD1306_greyscale/index.html">TOOLS</a>
 
