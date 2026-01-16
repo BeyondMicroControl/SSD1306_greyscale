@@ -1,5 +1,17 @@
 # SSD1306 greyscale
 
+Ever wondered how to display greyscale images on a dirt-cheap SSD1306 ?
+This is a test made on a tiny (display area 11x5.5mm) 64 x 32 resolution display.
+
+<img src="/res/20260115_184123.jpg">
+
+However it looks like a gimmick, the real use of greyscale considerably 
+- increases readability
+- masks disturbing aliasing artifacts
+- allows to percieve more detail in graphs and diagrams
+
 <a href="https://beyondmicrocontrol.github.io/SSD1306_greyscale/index.html">TOOLS</a>
 
 <a href="https://beyondmicrocontrol.github.io/AsciiCAD/index.html?d=eNqtlU9rgzAYxu9+ive+i//qztaMUuamLK4USj9ALztvt9bzDhYilcEYlMEuhX2nfJIlqV3VRk1VCZo3kDy/503eOHlEQMlm6ParPKjaNGh+KIn/O9rNaMa+a0oO4j1Ui9sGr5bTyuwtvnJ3/ebQlNA06dp2ratvgR6+ARZuFK1e3uamvYTjcPtEiRP5PPF+V0hwclIg+Ui6h5nnFRQmvADSr9OETKZUp5ecPUCjA6im/efK/k5QlNX2ELp2HmHvnkUWd3JW5da4Wez5gJGbb87FOs3UW7VES1IvV+PUI4CnuQEPUxywyCxSy441r7Fu5GKtBcbIsHRn2bgW53IAIs4V4CmLjAsux4ZXsEwI/DvUn0vNI+e6PQbPIeJcepmLdNqdrAv5R4+L41PubWyxo6CLE+yzSC/Woqiw+htOlbz+ppQTmewQCCJWMuHYqBDFA/1Lsopyv9wWr7iB+P4AnMC7VA==#">SCHEMA</a>
+
+<a href=https://github.com/BeyondMicroControl/SSD1306_greyscale/tree/main/arduino/Simple_SSD1306_greyscale>ARDUINO CODE</a>
