@@ -7,8 +7,8 @@ This is a test made on a tiny (display area 11x5.5mm) 64 x 32 resolution display
 
 However it looks like a gimmick, there are real use cases for greyscale as they
 - increases readability
-- masks disturbing aliasing artifacts
-- allows percieve more detail in graphs and diagrams
+- get rid of disturbing aliasing artifacts
+- allow 'percieve' more detail in graphs and diagrams
 
 <a href="https://beyondmicrocontrol.github.io/SSD1306_greyscale/index.html">TOOLS</a>
 
