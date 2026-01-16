@@ -4,7 +4,7 @@ Ever wondered how to display greyscale images on a dirt-cheap SSD1306 ?</br>
 This is a test made on a tiny (display area 11x5.5mm) 64 x 32 resolution display.
 
 ## How it's done
-The SSD1309 has no greyscale capabilities.  This Arduino code however can flip 2 bitmaps at 50Hz with a duty cycle of 25/75%. A pixel on the first bitmap will show at 25% brightness, the same pixel on the second bitmap show at 75% brightness and the same pixel on both bitmaps obviously 100%. Flipping the bitmaps using the Tiny4KOLED takes almost no CPU time or I2C communication, and since the PWM timing can be completely done by means of interrupt logic, the main loop() is almost 100% obstruction-free. This solution works flawlessly, even when running your MCU at low power, at 1MHz clock speed.
+The SSD1309 has no greyscale capabilities.  This Arduino code however can flip 2 bitmaps at 50Hz with a duty cycle of 25/75%. A pixel on the first bitmap will show at 25% brightness, the same pixel on the second bitmap show at 75% brightness and the same pixel on both bitmaps obviously 100%. Flipping the bitmaps using the Tiny4KOLED takes almost no CPU time or I2C communication, and since the PWM timing can be completely done by means of interrupt logic, the main loop() is almost 100% obstruction-free. This solution works flawlessly, even when running your MCU at 1MHz clock speed to save energy.
 
 <img src="/res/20260115_184123.jpg">
 
