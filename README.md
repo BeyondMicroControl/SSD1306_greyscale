@@ -1,6 +1,7 @@
 # SSD1306 greyscale
 
 Ever wondered how to display greyscale images on a dirt-cheap SSD1306 display ?
+
 This is a test made on a tiny (display area 11x5.5mm) 64 x 32 resolution display.
 
 <img src="/res/20260115_184123.jpg">
