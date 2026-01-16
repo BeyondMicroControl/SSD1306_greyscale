@@ -5,7 +5,7 @@ This is a test made on a tiny (display area 11x5.5mm) 64 x 32 resolution display
 
 <img src="/res/20260115_184123.jpg">
 
-However it looks like a gimmick, the real use of greyscale considerably 
+However it looks like a gimmick, there are real use cases for greyscale as they
 - increases readability
 - masks disturbing aliasing artifacts
 - allows to percieve more detail in graphs and diagrams
