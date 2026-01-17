@@ -19,6 +19,15 @@ However it looks like a gimmick, there are real use cases for greyscale as they
 
 <a href=https://github.com/BeyondMicroControl/SSD1306_greyscale/tree/main/arduino/Simple_SSD1306_greyscale>ARDUINO CODE</a>
 
-# Additional footage
+
+## Feature wish-list
+
+- [ ] Font anti-aliasing, sub-pixel rendering
+- [ ] Font brightness
+
+## Status
+
+Actively evolving.  
+Focused on correctness, editor compatibility, and expressive schematic text.
 
 <img src="/res/20260116_134027.jpg">
