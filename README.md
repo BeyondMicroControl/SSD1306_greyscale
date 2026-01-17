@@ -9,8 +9,8 @@ The SSD1309 has no greyscale capabilities.  This Arduino code however can flip 2
 <img src="/res/20260115_184123.jpg">
 
 However it looks like a gimmick, there are real use cases for greyscale as they
-- increases readability
-- get rid of disturbing aliasing artifacts
+- increase readability
+- help getting rid of aliasing artifacts
 - allow 'percieve' more detail in graphs and diagrams
 
 <a href="https://beyondmicrocontrol.github.io/SSD1306_greyscale/index.html">TOOLS</a>
