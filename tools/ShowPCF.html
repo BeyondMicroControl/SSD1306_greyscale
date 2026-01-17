@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PCF Glyph Sheet (64×64 canvases)</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    #grid {
+      margin-top: 16px;
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+      gap: 14px;
+    }
+    .cell {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+    }
+    canvas { border: 1px solid #eee; image-rendering: pixelated; }
+    .cap { font-size: 12px; text-align: center; line-height: 1.15; word-break: break-word; }
+    .muted { opacity: 0.7; }
+    .warn { color: #a33; }
+    .ok { color: #2a7; }
+    code { background: #f6f6f6; padding: 2px 4px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="row">
+    <input id="file" type="file" accept=".pcf,.pcf.gz" />
+    <label class="row" style="gap:6px;">
+      <span>Only ASCII (0–127)</span>
+      <input id="onlyAscii" type="checkbox" />
+    </label>
+    <label class="row" style="gap:6px;">
+      <span>Invert</span>
+      <input id="invert" type="checkbox" />
+    </label>
+
+    <label class="row" style="gap:6px;">
+    <span>Flip X</span>
+    <input id="flipX" type="checkbox"/>
+    </label>
+
+    <button id="clear">Clear</button>
+  </div>
+
+  <p id="status" class="muted">
+    Load a <code>.pcf</code> font file. (If it’s <code>.pcf.gz</code>, decompress first or add gzip support.)
+  </p>
+
+  <div id="grid"></div>
+
+<script>
+/**
+ * Minimal PCF parser + renderer for common PCF bitmap fonts.
+ * Handles: TOC, METRICS, BITMAPS, BDF_ENCODINGS.
+ *
+ * Notes:
+ * - PCF stores numeric values with an endianness flag per-table.
+ * - BITMAPS table also has bit/byte order flags.
+ * - This code aims to be practical for typical PCF fonts.
+ *
+ * PCF format reference:
+ * - FontForge PCF format docs: https://fontforge.org/docs/techref/pcf-format.html
+ */
+
+// ---- PCF constants ----
+const PCF_MAGIC = 0x70636601; // bytes: 01 66 63 70 (little-end value if read LE)
+const TABLE = {
+  PROPERTIES:     1,
+  ACCELERATORS:   2,
+  METRICS:        4,
+  BITMAPS:        8,
+  INK_METRICS:   16,
+  BDF_ENCODINGS: 32,
+  SWIDTHS:       64,
+  GLYPH_NAMES:  128,
+  BDF_ACCELS:   256,
+};
+
+// format flags (as used by X11 PCF)
+const PCF_FORMAT_MASK = 0xFFFFFF00;
+const PCF_BYTE_MASK   = 0x00000001; // 0 = MSBFirst, 1 = LSBFirst (for bit/byte order contexts)
+const PCF_BIT_MASK    = 0x00000002; // 0 = MSBFirst, 1 = LSBFirst (bit order)
+const PCF_SCANUNIT_MASK = 0x0000000C; // 00=1, 04=2, 08=4, 0C=8
+const PCF_GLYPH_PAD_MASK = 0x00000030; // 00=1, 10=2, 20=4, 30=8
+const PCF_SIZE_MASK = 0x000000C0; // 00=1, 40=2, 80=4, C0=8
+const PCF_FORMAT_LITTLEENDIAN = 0x00000000; // as per X sources for numeric? (implementation-dependent)
+const PCF_FORMAT_BIGENDIAN    = 0x00000004; // commonly used flag for numeric endianness in some tables (varies by impl)
+
+// In X11 PCF, these are derived differently; we’ll interpret common cases:
+// - numeric endianness: decide via format & 0x00000004 (heuristic)
+// - bit order: format & PCF_BIT_MASK
+// - byte order: format & PCF_BYTE_MASK
+function isBigEndianNumeric(fmt) {
+  // Heuristic: many PCF tables use bit 2 to indicate byte order for multi-byte numbers.
+  // If this mis-detects a font, you can force it.
+  return (fmt & 0x00000004) !== 0;
+}
+function glyphPadBytes(fmt) {
+  const v = (fmt & PCF_GLYPH_PAD_MASK);
+  if (v === 0x00) return 1;
+  if (v === 0x10) return 2;
+  if (v === 0x20) return 4;
+  return 8;
+}
+function bitOrderLSB(fmt) { return (fmt & PCF_BIT_MASK) !== 0; }
+function byteOrderLSB(fmt) { return (fmt & PCF_BYTE_MASK) !== 0; }
+
+// ---- Binary helpers ----
+class Reader {
+  constructor(buf) {
+    this.buf = buf;
+    this.dv = new DataView(buf);
+    this.u8 = new Uint8Array(buf);
+    this.off = 0;
+  }
+  seek(pos) { this.off = pos; }
+  tell() { return this.off; }
+  u8r() { return this.dv.getUint8(this.off++); }
+  i8r() { return this.dv.getInt8(this.off++); }
+  u16(le=true) { const v = this.dv.getUint16(this.off, le); this.off += 2; return v; }
+  i16(le=true) { const v = this.dv.getInt16(this.off, le); this.off += 2; return v; }
+  u32(le=true) { const v = this.dv.getUint32(this.off, le); this.off += 4; return v; }
+  bytes(n) { const v = this.u8.slice(this.off, this.off+n); this.off += n; return v; }
+}
+
+// reverse bit order in a byte: 0babc... -> reversed
+const BITREV = (() => {
+  const t = new Uint8Array(256);
+  for (let i=0;i<256;i++){
+    let x=i, r=0;
+    for (let b=0;b<8;b++){ r = (r<<1) | (x&1); x>>=1; }
+    t[i]=r;
+  }
+  return t;
+})();
+
+// ---- PCF parsing ----
+function parsePCF(arrayBuffer) {
+  const r = new Reader(arrayBuffer);
+
+  // magic bytes are: 0x01 0x66 0x63 0x70
+  const b0 = r.u8r(), b1 = r.u8r(), b2 = r.u8r(), b3 = r.u8r();
+  const magicLE = (b0) | (b1<<8) | (b2<<16) | (b3<<24);
+  if (magicLE !== PCF_MAGIC) {
+    throw new Error("Not a PCF file (bad magic). If your file is .pcf.gz, decompress first.");
+  }
+
+  const nTables = r.u32(true);
+  const toc = [];
+  for (let i=0;i<nTables;i++){
+    const type = r.u32(true);
+    const format = r.u32(true);
+    const size = r.u32(true);
+    const offset = r.u32(true);
+    toc.push({type, format, size, offset});
+  }
+
+  function getTable(t) {
+    const e = toc.find(x => x.type === t);
+    if (!e) return null;
+    return e;
+  }
+
+  // --- METRICS table ---
+  // We implement the common “compressed metrics” and normal metrics forms.
+  function parseMetrics() {
+    const t = getTable(TABLE.METRICS);
+    if (!t) throw new Error("No METRICS table found.");
+    const leNum = !isBigEndianNumeric(t.format);
+    r.seek(t.offset);
+    const fmt = r.u32(true); // format stored as LE in file header contexts
+    const le = !isBigEndianNumeric(fmt);
+
+    // In PCF: if (format & 0x00000100) => compressed metrics (1-byte fields w/ bias)
+    const compressed = (fmt & 0x00000100) !== 0;
+
+    let count;
+    if (compressed) {
+      count = r.u16(le);
+      const metrics = [];
+      for (let i=0;i<count;i++){
+        const left   = r.u8r() - 0x80;
+        const right  = r.u8r() - 0x80;
+        const width  = r.u8r() - 0x80;
+        const ascent = r.u8r() - 0x80;
+        const descent= r.u8r() - 0x80;
+        metrics.push({left, right, width, ascent, descent});
+      }
+      return metrics;
+    } else {
+      count = r.u32(le);
+      const metrics = [];
+      for (let i=0;i<count;i++){
+        const left   = r.i16(le);
+        const right  = r.i16(le);
+        const width  = r.i16(le);
+        const ascent = r.i16(le);
+        const descent= r.i16(le);
+        const attrs  = r.u16(le); // unused for drawing
+        metrics.push({left, right, width, ascent, descent, attrs});
+      }
+      return metrics;
+    }
+  }
+
+  // --- BITMAPS table ---
+  function parseBitmaps() {
+    const t = getTable(TABLE.BITMAPS);
+    if (!t) throw new Error("No BITMAPS table found.");
+    r.seek(t.offset);
+    const fmt = r.u32(true);
+    const le = !isBigEndianNumeric(fmt);
+
+    const glyphCount = r.u32(le);
+    const offsets = new Uint32Array(glyphCount);
+    for (let i=0;i<glyphCount;i++) offsets[i] = r.u32(le);
+
+    // sizes for 4 padding variants (per X11 PCF)
+    const bitmapSizes = [];
+    for (let i=0;i<4;i++) bitmapSizes.push(r.u32(le));
+
+    const dataStart = r.tell();
+
+    const headerLen = dataStart - t.offset;
+    const dataLen = t.size - headerLen;
+    let padIndex = bitmapSizes.findIndex(sz => sz === dataLen);
+    if (padIndex < 0) padIndex = 0;
+    const pad = 1 << padIndex;
+
+    const bitLSB = bitOrderLSB(fmt);
+    const byteLSB = byteOrderLSB(fmt);
+
+    return { fmt, glyphCount, offsets, bitmapSizes, dataStart, pad, bitLSB, byteLSB };
+  }
+
+  // --- BDF_ENCODINGS table ---
+  function parseEncodings() {
+    const t = getTable(TABLE.BDF_ENCODINGS);
+    if (!t) throw new Error("No BDF_ENCODINGS table found.");
+    r.seek(t.offset);
+    const fmt = r.u32(true);
+    const le = !isBigEndianNumeric(fmt);
+
+    const minChar2 = r.u16(le);
+    const maxChar2 = r.u16(le);
+    const minByte1 = r.u16(le);
+    const maxByte1 = r.u16(le);
+    const defaultChar = r.u16(le);
+
+    const rows = (maxByte1 - minByte1 + 1);
+    const cols = (maxChar2 - minChar2 + 1);
+    const n = rows * cols;
+
+    const glyphIndices = new Uint16Array(n);
+    for (let i=0;i<n;i++) glyphIndices[i] = r.u16(le);
+
+    return { minChar2, maxChar2, minByte1, maxByte1, defaultChar, glyphIndices, rows, cols };
+  }
+
+  const metrics = parseMetrics();
+  const bitmaps = parseBitmaps();
+  const enc = parseEncodings();
+
+  return { toc, metrics, bitmaps, enc, u8: new Uint8Array(arrayBuffer) };
+}
+
+// Convert encoding table position to codepoint (byte1, char2) for ISO-8859-1-ish single byte fonts:
+// In X11 core fonts, the (byte1, char2) scheme covers 2-byte encodings too.
+// We’ll treat it as: codepoint = (byte1<<8) | char2.
+function iterCodepoints(enc) {
+  const out = [];
+  let idx = 0;
+  for (let b1 = enc.minByte1; b1 <= enc.maxByte1; b1++) {
+    for (let c2 = enc.minChar2; c2 <= enc.maxChar2; c2++, idx++) {
+      const gi = enc.glyphIndices[idx];
+      if (gi !== 0xFFFF) {
+        const cp = (b1 << 8) | c2;
+        out.push({ codepoint: cp, glyphIndex: gi, b1, c2 });
+      }
+    }
+  }
+  return out;
+}
+
+// Extract glyph bitmap to a boolean 2D array using metrics and bitmap offset.
+function getGlyphBitmap(pcf, glyphIndex) {
+  const { metrics, bitmaps, u8 } = pcf;
+  const m = metrics[glyphIndex];
+  if (!m) return null;
+
+  const w = (m.right - m.left);
+  const h = (m.ascent + m.descent);
+  if (w <= 0 || h <= 0) return { w: 0, h: 0, pixels: [] };
+
+  const offset = bitmaps.offsets[glyphIndex];
+  const start = bitmaps.dataStart + offset;
+
+  // In PCF bitmaps: each row is padded to glyphPadBytes(fmt) boundary in bytes.
+  // Row bytes = ceil(w/8), then rounded up to pad.
+  const rowBits = w;
+  const rowBytesUnpadded = Math.ceil(rowBits / 8);
+  const pad = bitmaps.pad;
+  const rowBytes = Math.ceil(rowBytesUnpadded / pad) * pad;
+
+  const pixels = new Array(h);
+  for (let y = 0; y < h; y++) {
+    const row = new Array(w).fill(false);
+    const rowOff = start + y * rowBytes;
+
+    for (let x = 0; x < w; x++) {
+      const byteIndex = (x >> 3);
+      const bitIndex = x & 7;
+      let b = u8[rowOff + byteIndex] ?? 0;
+
+      // handle bit order
+      if (bitmaps.bitLSB) {
+        // LSBFirst within the byte
+        const on = ((b >> bitIndex) & 1) !== 0;
+        row[x] = on;
+      } else {
+        // MSBFirst within the byte
+        const on = ((b >> (7 - bitIndex)) & 1) !== 0;
+        row[x] = on;
+      }
+    }
+    pixels[y] = row;
+  }
+
+  return { w, h, pixels, metrics: m };
+}
+
+function printableChar(cp) {
+  // Control chars: show a visible placeholder
+  if (cp < 0x20) return "␀";
+  if (cp === 0x7F) return "␡";
+  try { return String.fromCodePoint(cp); } catch { return "�"; }
+}
+
+function fmtCaption(cp) {
+  const dec = cp.toString(10);
+  const hex = "0x" + cp.toString(16).toUpperCase().padStart(2, "0");
+  const ch = printableChar(cp);
+  const safe = (ch === "<") ? "&lt;" : (ch === ">") ? "&gt;" : (ch === "&") ? "&amp;" : ch;
+  return { dec, hex, ch, safe };
+}
+
+function renderGlyphToCanvas(canvas, glyph, invert=false) {
+  const ctx = canvas.getContext("2d"); // <-- no {alpha:false}
+  const W = canvas.width, H = canvas.height;
+
+  // background
+  ctx.fillStyle = invert ? "#000" : "#fff";
+  ctx.fillRect(0, 0, W, H);
+
+  const gw = glyph.w, gh = glyph.h;
+  if (gw <= 0 || gh <= 0) return;
+
+  // choose ink color
+  ctx.fillStyle = invert ? "#fff" : "#000";
+
+  const scale = Math.max(1, Math.floor(Math.min(W / gw, H / gh)));
+  const drawW = gw * scale;
+  const drawH = gh * scale;
+  const ox = Math.floor((W - drawW) / 2);
+  const oy = Math.floor((H - drawH) / 2);
+
+    const flipX = document.getElementById("flipX")?.checked ?? false;
+
+    for (let y = 0; y < gh; y++) {
+    for (let x = 0; x < gw; x++) {
+        const srcX = flipX ? (gw - 1 - x) : x;
+        if (glyph.pixels[y][srcX]) {
+        ctx.fillRect(ox + x * scale, oy + y * scale, scale, scale);
+        }
+    }
+    }
+
+
+}
+
+
+function setStatus(msg, cls="muted") {
+  const el = document.getElementById("status");
+  el.className = cls;
+  el.textContent = msg;
+}
+
+function clearGrid() {
+  document.getElementById("grid").innerHTML = "";
+}
+
+document.getElementById("clear").addEventListener("click", clearGrid);
+
+document.getElementById("file").addEventListener("change", async (e) => {
+  clearGrid();
+
+  const file = e.target.files?.[0];
+  if (!file) return;
+
+  const onlyAscii = document.getElementById("onlyAscii").checked;
+  const invert = document.getElementById("invert").checked;
+
+  try {
+    const buf = await file.arrayBuffer();
+
+    // If the user loaded a .gz, this will fail magic check (unless already decompressed).
+    const pcf = parsePCF(buf);
+
+    const cps = iterCodepoints(pcf.enc)
+      .filter(({codepoint}) => !onlyAscii || (codepoint >= 0 && codepoint <= 127))
+      .sort((a,b) => a.codepoint - b.codepoint);
+
+    setStatus(`Parsed ${file.name}. Found ${cps.length} encodings${onlyAscii ? " (ASCII only)" : ""}.`, "ok");
+
+    const grid = document.getElementById("grid");
+
+    for (const { codepoint, glyphIndex } of cps) {
+      const glyph = getGlyphBitmap(pcf, glyphIndex);
+      if (!glyph) continue;
+
+      const cell = document.createElement("div");
+      cell.className = "cell";
+
+      const canvas = document.createElement("canvas");
+      canvas.width = 64; canvas.height = 64;
+      renderGlyphToCanvas(canvas, glyph, invert);
+
+      const cap = document.createElement("div");
+      cap.className = "cap";
+      const { dec, hex, safe } = fmtCaption(codepoint);
+
+      // Show: ASCII/Unicode code + rendered HTML character
+      cap.innerHTML = `${dec} <span class="muted">(${hex})</span><br><span style="font-size:16px">${safe}</span>`;
+
+      cell.appendChild(canvas);
+      cell.appendChild(cap);
+      grid.appendChild(cell);
+
+
+      // ASSERTION
+      if (codepoint === 65) console.log("A:", glyph.w, glyph.h, glyph.metrics);
+
+
+    }
+  } catch (err) {
+    console.error(err);
+    setStatus(String(err?.message || err), "warn");
+  }
+});
+
+</script>
+</body>
+</html>
