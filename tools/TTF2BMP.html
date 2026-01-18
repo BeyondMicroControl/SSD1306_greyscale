@@ -1,0 +1,398 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>TTF → 16px SSD1306 Glyph Pack</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 16px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
+    label { display: block; margin: 6px 0 2px; font-size: 13px; }
+    input[type="text"], textarea, select, input[type="number"] { width: 520px; max-width: 100%; }
+    textarea { height: 90px; }
+    canvas { border: 1px solid #ccc; image-rendering: pixelated; }
+    pre { background: #f6f6f6; padding: 10px; overflow: auto; max-height: 260px; }
+    .small { font-size: 12px; color: #444; }
+    button { padding: 8px 12px; }
+  </style>
+</head>
+<body>
+  <h2>TTF/OTF → 16px SSD1306 glyph data (2 bytes/column)</h2>
+
+  <div class="row">
+    <div>
+      <label>Font file (TTF/OTF)</label>
+      <input id="fontFile" type="file" accept=".ttf,.otf,.woff,.woff2" />
+      <div class="small">All processing stays in your browser.</div>
+
+      <label>Characters to export</label>
+      <textarea id="chars"></textarea>
+      <div class="small">
+        Tip: keep to ASCII 32–126 for smallest output. You can include extras like “°µΩ”.
+      </div>
+
+      <label>Mode</label>
+      <select id="mode">
+        <option value="proportional">Proportional (tight crop per glyph)</option>
+        <option value="monospace">Monospace (fixed width)</option>
+      </select>
+
+      <div class="row">
+        <div>
+          <label>Monospace width (columns)</label>
+          <input id="monoWidth" type="number" value="8" min="1" max="64" />
+        </div>
+        <div>
+          <label>Extra spacing columns</label>
+          <input id="spacingCols" type="number" value="1" min="0" max="8" />
+        </div>
+        <div>
+          <label>Threshold (0–255)</label>
+          <input id="threshold" type="number" value="128" min="0" max="255" />
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:10px;">
+        <button id="run">Rasterize & Pack</button>
+        <button id="dlh" disabled>Download .h</button>
+        <button id="dlj" disabled>Download .json</button>
+      </div>
+    </div>
+
+    <div>
+      <label>Preview (first ~80 glyphs)</label>
+      <canvas id="preview" width="520" height="140"></canvas>
+      <div class="small">
+        Output format: 16px-high → each column is 2 bytes (page0, page1).<br/>
+        A blank column = <code>0x00, 0x00</code>.
+      </div>
+    </div>
+  </div>
+
+  <h3>Generated output snippet</h3>
+  <pre id="out"></pre>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+
+  // Default character set: ASCII 32..126
+  const defaultChars = Array.from({length: 95}, (_,i)=>String.fromCharCode(32+i)).join('');
+  $('chars').value = defaultChars;
+
+  let loadedFontFamily = null;
+  let lastHeaderText = "";
+  let lastJsonText = "";
+
+  function uniqChars(str) {
+    const seen = new Set();
+    let out = "";
+    for (const ch of str) {
+      if (!seen.has(ch)) { seen.add(ch); out += ch; }
+    }
+    return out;
+  }
+
+  async function loadFontFromFile(file) {
+    const buf = await file.arrayBuffer();
+    const family = "UserFont_" + Math.random().toString(16).slice(2);
+    const ff = new FontFace(family, buf);
+    await ff.load();
+    document.fonts.add(ff);
+    loadedFontFamily = family;
+    return family;
+  }
+
+  // Find a fontSize such that (ascent+descent) ~ targetPx, using canvas TextMetrics.
+  // Keeps results relatively consistent across browsers that support actualBoundingBox*.
+  function fitFontSize(ctx, family, targetPx) {
+    let lo = 1, hi = 256;
+    let best = 16;
+
+    const measureHeight = (size) => {
+      ctx.font = `${size}px "${family}"`;
+      const m = ctx.measureText("Hg"); // ascenders/descenders
+      const h = (m.actualBoundingBoxAscent || size) + (m.actualBoundingBoxDescent || 0);
+      return h || size;
+    };
+
+    for (let it = 0; it < 12; it++) {
+      const mid = (lo + hi) >> 1;
+      const h = measureHeight(mid);
+      if (h < targetPx) lo = mid + 1;
+      else hi = mid - 1;
+      best = mid;
+    }
+    return best;
+  }
+
+  function makeOffscreen(w, h) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    return { c, ctx };
+  }
+
+  // Render one glyph to a temporary canvas and return:
+  // - bitmap bytes in SSD1306 column format (2 bytes/col for 16px)
+  // - width in columns (without spacing)
+  // - advance in columns (width + spacing)
+  function rasterizeGlyphToColumns16(ctx, family, ch, mode, monoWidth, spacingCols) {
+  // Render big for reliability
+  const renderPx = 64;            // large font size
+  const W = 256, H = 128;         // bigger canvas to avoid clipping wide glyphs
+  const pad = 16;
+
+  ctx.canvas.width = W;
+  ctx.canvas.height = H;
+
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = "black";
+  ctx.textBaseline = "alphabetic";
+  ctx.font = `${renderPx}px "${family}"`;
+
+  const m = ctx.measureText(ch);
+  const ascent  = m.actualBoundingBoxAscent  ?? Math.round(renderPx * 0.8);
+  const descent = m.actualBoundingBoxDescent ?? Math.round(renderPx * 0.2);
+
+  const baselineY = pad + ascent;
+  const x0 = pad;
+
+  ctx.clearRect(0,0,W,H);
+  ctx.fillText(ch, x0, baselineY);
+
+  const img = ctx.getImageData(0,0,W,H).data;
+
+  // Tight bbox using alpha>0 (no threshold)
+  let minX = W, minY = H, maxX = -1, maxY = -1;
+  for (let y=0; y<H; y++) {
+    for (let x=0; x<W; x++) {
+      const a = img[(y*W + x)*4 + 3];
+      if (a > 0) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  // Blank glyph: emit full advance as zeros (IMPORTANT for correct offsets)
+  if (maxX < 0) {
+    const advCols = (mode === "monospace") ? monoWidth : Math.max(1, Math.round((m.width || renderPx*0.3) / 8));
+    const advance = advCols + spacingCols;
+    return { bytes: new Array(advance * 2).fill(0), width: 0, advance };
+  }
+
+  // Source bbox
+  const srcW = (maxX - minX + 1);
+  const srcH = (maxY - minY + 1);
+
+  // Decide destination width in columns:
+  // - proportional: scale width to keep aspect when scaling height to 16
+  // - monospace: fixed width
+  let dstW = (mode === "monospace")
+    ? monoWidth
+    : Math.max(1, Math.round(srcW * (16 / srcH)));
+
+  // Downsample from bbox to 16px-high bitmap via coverage (still lean)
+  // For each dst pixel, sample a small number of src points (4 taps).
+  const outBytes = [];
+  for (let dx = 0; dx < dstW; dx++) {
+    let b0 = 0, b1 = 0;
+
+    for (let dy = 0; dy < 16; dy++) {
+      // Map dst pixel center(s) to src space
+      const fx = (dx + 0.5) * srcW / dstW;
+      const fy = (dy + 0.5) * srcH / 16;
+
+      // 2x2 taps around that point (integer-only-ish; very cheap)
+      const sx0 = Math.min(srcW-1, Math.max(0, (fx|0)));
+      const sy0 = Math.min(srcH-1, Math.max(0, (fy|0)));
+      const sx1 = Math.min(srcW-1, sx0 + 1);
+      const sy1 = Math.min(srcH-1, sy0 + 1);
+
+      const A = img[((minY+sy0)*W + (minX+sx0))*4 + 3] > 0;
+      const B = img[((minY+sy0)*W + (minX+sx1))*4 + 3] > 0;
+      const C = img[((minY+sy1)*W + (minX+sx0))*4 + 3] > 0;
+      const D = img[((minY+sy1)*W + (minX+sx1))*4 + 3] > 0;
+
+      // Any-tap-on => 1bpp on (you can make this majority for thicker strokes)
+      const ink = (A || B || C || D) ? 1 : 0;
+
+      if (ink) {
+        if (dy < 8) b0 |= (1 << dy);
+        else        b1 |= (1 << (dy - 8));
+      }
+    }
+
+    outBytes.push(b0, b1);
+  }
+
+  // spacing columns
+  for (let s = 0; s < spacingCols; s++) outBytes.push(0x00, 0x00);
+
+  const advance = dstW + spacingCols;
+  return { bytes: outBytes, width: dstW, advance };
+}
+
+
+  function toCArray(bytes, indent="  ", perLine=16) {
+    let s = "";
+    for (let i=0; i<bytes.length; i++) {
+      if (i % perLine === 0) s += indent;
+      s += "0x" + bytes[i].toString(16).padStart(2,'0') + (i+1<bytes.length ? ", " : "");
+      if ((i % perLine) === perLine-1) s += "\n";
+    }
+    if (!s.endsWith("\n")) s += "\n";
+    return s;
+  }
+
+  function downloadText(filename, text) {
+    const blob = new Blob([text], {type: "text/plain"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 1000);
+  }
+
+  function drawPreview(packed, glyphs, chars) {
+    const cv = $('preview');
+    const ctx = cv.getContext('2d');
+    ctx.clearRect(0,0,cv.width,cv.height);
+
+    // Draw as pixels: each glyph is columns*16 in a strip
+    const scale = 4;
+    const maxGlyphs = Math.min(chars.length, 80);
+
+    let x = 6, y = 6;
+    for (let i=0; i<maxGlyphs; i++) {
+      const g = glyphs[i];
+      const off = g.offset;
+      const advCols = g.advance;
+      // Draw glyph region including spacing
+      for (let col = 0; col < advCols; col++) {
+        const b0 = packed[off + col*2] ?? 0;
+        const b1 = packed[off + col*2 + 1] ?? 0;
+        for (let yy=0; yy<16; yy++) {
+          const ink = (yy<8) ? ((b0 >> yy) & 1) : ((b1 >> (yy-8)) & 1);
+          if (ink) ctx.fillRect(x + col*scale, y + yy*scale, scale, scale);
+        }
+      }
+      x += (advCols + 1) * scale;
+      if (x > cv.width - 80) { x = 6; y += 18*scale; if (y > cv.height - 18*scale) break; }
+    }
+  }
+
+  $('run').addEventListener('click', async () => {
+    const file = $('fontFile').files[0];
+    if (!file) { alert("Choose a TTF/OTF first."); return; }
+    const family = await loadFontFromFile(file);
+
+    const chars = uniqChars($('chars').value.replace(/\r/g,''));
+    const mode = $('mode').value;
+    const monoWidth = Math.max(1, Math.min(64, parseInt($('monoWidth').value,10) || 8));
+    const spacingCols = Math.max(0, Math.min(8, parseInt($('spacingCols').value,10) || 1));
+    const threshold = Math.max(0, Math.min(255, parseInt($('threshold').value,10) || 128));
+
+    const { ctx } = makeOffscreen(128, 64);
+
+    // Choose a fontSize that makes typical height ~16
+    const fittedSize = fitFontSize(ctx, family, 16);
+
+    // Build packed data and glyph index
+    const packed = [];
+    const glyphs = [];
+
+    for (let i=0; i<chars.length; i++) {
+      const ch = chars[i];
+
+      const offset = packed.length;
+      const r = rasterizeGlyphToColumns16(ctx, family, ch, mode, monoWidth, spacingCols);
+      for (const b of r.bytes) packed.push(b);
+
+      glyphs.push({
+        ch,
+        code: ch.codePointAt(0),
+        offset,
+        width: r.width,      // columns without spacing
+        advance: r.advance   // columns including spacing
+      });
+    }
+
+    // Make a C header
+    const firstCode = Math.min(...glyphs.map(g => g.code));
+    const lastCode  = Math.max(...glyphs.map(g => g.code));
+
+    // We’ll emit glyphs in the order of `chars` (not necessarily contiguous codes),
+    // plus a lookup table mapping code->glyph index.
+    // This is better for sparse sets and future per-glyph compression.
+    const codeToIndex = {};
+    glyphs.forEach((g, i) => codeToIndex[g.code] = i);
+
+    // Emit a sorted code list to keep lookup compact
+    const codesSorted = Object.keys(codeToIndex).map(n=>parseInt(n,10)).sort((a,b)=>a-b);
+
+    const header =
+`// Generated by browser TTF→SSD1306 tool
+// Height: 16px, format: 2 bytes per column (page0, page1)
+// Spacing: ${spacingCols} blank column(s) appended to each glyph as 0x00,0x00 columns
+#pragma once
+#include <stdint.h>
+
+#ifdef ARDUINO
+#include <avr/pgmspace.h>
+#endif
+
+typedef struct {
+  uint16_t offset;   // byte offset into font_data
+  uint8_t  width;    // columns without spacing
+  uint8_t  advance;  // columns including spacing
+  uint16_t codepoint; // Unicode codepoint
+} Glyph16_Col2;
+
+static const uint8_t font16_height = 16;
+
+static const uint8_t font_data[] PROGMEM = {
+${toCArray(packed)}
+};
+
+static const Glyph16_Col2 font_glyphs[] PROGMEM = {
+${glyphs.map(g => `  { ${g.offset}, ${g.width}, ${g.advance}, ${g.code} }, // '${g.ch.replace(/'/g,"\\'")}'`).join("\n")}
+};
+
+static const uint16_t font_glyph_count = ${glyphs.length};
+`;
+
+    const json = JSON.stringify({
+      height: 16,
+      bytesPerColumn: 2,
+      spacingCols,
+      mode,
+      monoWidth: mode === "monospace" ? monoWidth : null,
+      threshold,
+      fittedSize,
+      glyphs,
+      packedBytes: packed
+    }, null, 2);
+
+    lastHeaderText = header;
+    lastJsonText = json;
+
+    $('out').textContent = header.slice(0, 4000) + (header.length > 4000 ? "\n// ... (truncated preview)\n" : "");
+    $('dlh').disabled = false;
+    $('dlj').disabled = false;
+
+    drawPreview(packed, glyphs, chars);
+  });
+
+  $('dlh').addEventListener('click', () => downloadText("font16_ssd1306.h", lastHeaderText));
+  $('dlj').addEventListener('click', () => downloadText("font16_ssd1306.json", lastJsonText));
+})();
+</script>
+</body>
+</html>
