@@ -357,6 +357,7 @@ typedef struct {
 
 static const uint8_t font16_height = 16;
 
+// ${packed.length} bytes
 static const uint8_t font_data[] PROGMEM = {
 ${toCArray(packed)}
 };
@@ -383,7 +384,8 @@ static const uint16_t font_glyph_count = ${glyphs.length};
     lastHeaderText = header;
     lastJsonText = json;
 
-    $('out').textContent = header.slice(0, 4000) + (header.length > 4000 ? "\n// ... (truncated preview)\n" : "");
+    //$('out').textContent = header.slice(0, 4000) + (header.length > 4000 ? "\n// ... (truncated preview)\n" : "");
+    $('out').textContent = header;
     $('dlh').disabled = false;
     $('dlj').disabled = false;
 
