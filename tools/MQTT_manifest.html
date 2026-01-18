@@ -1,0 +1,928 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MQTT Device Manifest Generator (HA Discovery + Profiles)</title>
+  <style>
+    :root { --bg:#0b0f14; --fg:#e7eef7; --muted:#a7b4c2; --card:#111823; --line:#223044; --accent:#7cc4ff; }
+    *{ box-sizing:border-box; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+    body{ margin:0; background:var(--bg); color:var(--fg); }
+    header{ padding:18px 18px 8px; border-bottom:1px solid var(--line); }
+    header h1{ margin:0 0 6px; font-size:18px; font-weight:650; letter-spacing:.2px;}
+    header p{ margin:0; color:var(--muted); font-size:13px; line-height:1.35; }
+    main{ padding:18px; display:grid; grid-template-columns: 420px 1fr; gap:14px; }
+    @media (max-width: 980px){ main{ grid-template-columns: 1fr; } }
+    .card{ background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; }
+    .card h2{ margin:0 0 10px; font-size:14px; font-weight:650; color:#d8e7ff;}
+    .row{ display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
+    .row3{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap:10px; }
+    label{ display:block; font-size:12px; color:var(--muted); margin:8px 0 4px; }
+    input, select, textarea{
+      width:100%; padding:10px; border-radius:10px;
+      border:1px solid var(--line); background:#0d141e; color:var(--fg);
+      outline:none;
+    }
+    textarea{ min-height: 180px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px; line-height:1.35;}
+    button{
+      padding:10px 12px; border-radius:12px; border:1px solid var(--line);
+      background:#0e1825; color:var(--fg); cursor:pointer;
+    }
+    button.primary{ border-color:#2b78c2; background:rgba(124,196,255,.14); }
+    button:active{ transform: translateY(1px); }
+    .hint{ font-size:12px; color:var(--muted); line-height:1.35; margin-top:8px;}
+    .pill{ display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--muted); font-size:11px; margin-left:8px;}
+    .list{ display:flex; flex-direction:column; gap:8px; margin-top:10px;}
+    .metric{ border:1px solid var(--line); border-radius:12px; padding:10px; background:#0c121b;}
+    .metric .top{ display:flex; justify-content:space-between; align-items:center; gap:10px;}
+    .metric .name{ font-weight:650; font-size:13px;}
+    .metric .sub{ color:var(--muted); font-size:12px; }
+    .metric .grid{ display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-top:8px;}
+    .metric .grid3{ display:grid; grid-template-columns: 1fr 1fr 1fr; gap:10px; margin-top:8px;}
+    .toggle{ display:flex; align-items:center; gap:10px; margin-top:8px; }
+    .toggle input{ width:auto; }
+    .split{ display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .outTabs{ display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; }
+    .tab{ padding:8px 10px; border-radius:999px; border:1px solid var(--line); background:#0d141e; color:var(--muted); cursor:pointer; font-size:12px;}
+    .tab.active{ color:var(--fg); border-color:#2b78c2; background:rgba(124,196,255,.10); }
+    .warn{ border-left:3px solid #f2c94c; padding:8px 10px; background: rgba(242,201,76,.08); border-radius:10px; color:var(--muted); font-size:12px; line-height:1.35; }
+    .ok{ border-left:3px solid #27ae60; padding:8px 10px; background: rgba(39,174,96,.08); border-radius:10px; color:var(--muted); font-size:12px; line-height:1.35; }
+    .btnRow{ display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+    code.inline{ background: rgba(124,196,255,.10); border:1px solid var(--line); padding:2px 6px; border-radius:7px; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>MQTT Device Manifest Generator <span class="pill">Browser-only</span></h1>
+  <p>
+    Generates a canonical topic tree and Home Assistant MQTT Discovery config messages from a JSON “device profile”.
+    Includes an option wizard to add common best-practice metadata (availability/LWT, diagnostics, enum labels, etc.).
+  </p>
+</header>
+
+<main>
+  <section class="card" id="left">
+    <h2>1) Base settings</h2>
+
+    <div class="row">
+      <div>
+        <label>Preset</label>
+        <select id="presetSelect"></select>
+      </div>
+      <div>
+        <label>Target outputs</label>
+        <select id="targetsSelect" multiple size="3" title="Ctrl/Cmd-click to multi-select">
+          <option value="ha" selected>Home Assistant (MQTT Discovery)</option>
+          <option value="openhab">openHAB (topic suggestions)</option>
+          <option value="homie">Homie convention (topic suggestions)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Device ID (node id)</label>
+        <input id="deviceId" placeholder="ens160_aht2x_001" />
+      </div>
+      <div>
+        <label>Device name</label>
+        <input id="deviceName" placeholder="Air Sensor 001" />
+      </div>
+    </div>
+
+    <div class="row3">
+      <div>
+        <label>Manufacturer</label>
+        <input id="manufacturer" placeholder="YourBrand" />
+      </div>
+      <div>
+        <label>Model</label>
+        <input id="model" placeholder="ENS160 + AHT2X UART" />
+      </div>
+      <div>
+        <label>SW version</label>
+        <input id="swVersion" placeholder="1.2.3" />
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>State topic (JSON)</label>
+        <input id="stateTopic" placeholder="home/air/ens160_aht2x_001/state" />
+      </div>
+      <div>
+        <label>Availability topic</label>
+        <input id="availabilityTopic" placeholder="home/air/ens160_aht2x_001/availability" />
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>Home Assistant discovery prefix</label>
+        <input id="haPrefix" placeholder="homeassistant" />
+      </div>
+      <div>
+        <label>Device info topic (optional)</label>
+        <input id="infoTopic" placeholder="home/air/ens160_aht2x_001/info" />
+      </div>
+    </div>
+
+    <div class="toggle">
+      <input type="checkbox" id="useRetainConfig" checked />
+      <label for="useRetainConfig" style="margin:0;">Retain Discovery config (recommended)</label>
+    </div>
+    <div class="toggle">
+      <input type="checkbox" id="includeAvailability" checked />
+      <label for="includeAvailability" style="margin:0;">Include availability + LWT fields</label>
+    </div>
+    <div class="toggle">
+      <input type="checkbox" id="includeDiagnostics" checked />
+      <label for="includeDiagnostics" style="margin:0;">Add diagnostics sensors (status/seq/uptime if present)</label>
+    </div>
+
+    <div class="hint">
+      Canonical tree recommendation:
+      <span class="mono">.../state</span>, <span class="mono">.../availability</span>, optional <span class="mono">.../info</span> and <span class="mono">.../command</span>.
+      The generator will keep IDs stable for future upgrades.
+    </div>
+
+    <hr style="border:0;border-top:1px solid var(--line); margin:14px 0;">
+
+    <h2>2) Wizard: choose measurements</h2>
+    <div class="hint">Toggle metrics on/off, then tune names/units/classes. All values are read from the same JSON state payload.</div>
+
+    <div class="list" id="metricsList"></div>
+
+    <div class="btnRow">
+      <button class="primary" id="generateBtn">Generate manifest</button>
+      <button id="exportProfileBtn">Export profile JSON</button>
+      <button id="importProfileBtn">Import profile JSON</button>
+      <input type="file" id="importFile" accept="application/json" style="display:none;" />
+      <button id="resetBtn">Reset</button>
+    </div>
+
+    <div id="validationBox" style="margin-top:10px;"></div>
+  </section>
+
+  <section class="card" id="right">
+    <h2>3) Output</h2>
+    <div class="outTabs">
+      <button class="tab active" data-tab="ha">HA Discovery (topics + payloads)</button>
+      <button class="tab" data-tab="mqtt">Canonical MQTT topics</button>
+      <button class="tab" data-tab="profile">Profile JSON</button>
+      <button class="tab" data-tab="notes">Integration notes</button>
+    </div>
+
+    <div id="out-ha" class="outPane">
+      <div class="ok">
+        Publish each <b>config</b> message with <code class="inline">retain=true</code>. Publish <b>state</b> periodically. Use LWT for <b>availability</b>.
+      </div>
+      <label>Generated MQTT publishes (copy/paste)</label>
+      <textarea id="haOut" spellcheck="false"></textarea>
+      <div class="btnRow">
+        <button id="copyHaBtn">Copy</button>
+        <button id="downloadHaBtn">Download .txt</button>
+      </div>
+    </div>
+
+    <div id="out-mqtt" class="outPane" style="display:none;">
+      <label>Canonical topic tree</label>
+      <textarea id="mqttOut" spellcheck="false"></textarea>
+      <div class="btnRow">
+        <button id="copyMqttBtn">Copy</button>
+        <button id="downloadMqttBtn">Download .txt</button>
+      </div>
+    </div>
+
+    <div id="out-profile" class="outPane" style="display:none;">
+      <label>Profile JSON (the config you can version-control)</label>
+      <textarea id="profileOut" spellcheck="false"></textarea>
+      <div class="btnRow">
+        <button id="copyProfileBtn">Copy</button>
+        <button id="downloadProfileBtn">Download .json</button>
+      </div>
+    </div>
+
+    <div id="out-notes" class="outPane" style="display:none;">
+      <div class="warn">
+        This generator focuses on HA MQTT Discovery 1-to-1 mapping from a single JSON state message.
+        For openHAB/Homie, it prints topic suggestions and naming that remain compatible with your canonical tree.
+      </div>
+      <div class="hint" id="notesOut" style="margin-top:10px;"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  // ----------------------------
+  // Built-in metric templates
+  // ----------------------------
+  const METRIC_LIBRARY = [
+    {
+      key: "temperature_c",
+      name: "Temperature",
+      enabled: true,
+      json_path: "temperature_c",
+      ha: { component: "sensor", device_class: "temperature", unit: "°C", state_class: "measurement" },
+      semantic: { kind: "number" }
+    },
+    {
+      key: "humidity_rh",
+      name: "Humidity",
+      enabled: true,
+      json_path: "humidity_rh",
+      ha: { component: "sensor", device_class: "humidity", unit: "%RH", state_class: "measurement" },
+      semantic: { kind: "number" }
+    },
+    {
+      key: "tvoc_ppb",
+      name: "TVOC",
+      enabled: true,
+      json_path: "tvoc_ppb",
+      ha: { component: "sensor", device_class: null, unit: "ppb", state_class: "measurement" },
+      semantic: { kind: "number" }
+    },
+    {
+      key: "eco2_ppm",
+      name: "eCO₂",
+      enabled: true,
+      json_path: "eco2_ppm",
+      ha: { component: "sensor", device_class: "carbon_dioxide", unit: "ppm", state_class: "measurement" },
+      semantic: { kind: "number" }
+    },
+    {
+      key: "aq_uba",
+      name: "Air Quality (UBA)",
+      enabled: true,
+      json_path: "aq_uba",
+      ha: { component: "sensor", device_class: null, unit: null, state_class: null },
+      semantic: {
+        kind: "enum",
+        // Typical 1..5 mapping; adjust to your needs
+        enum_map: { "1":"excellent", "2":"good", "3":"moderate", "4":"poor", "5":"unhealthy" }
+      }
+    },
+    {
+      key: "aq_label",
+      name: "Air Quality (Label)",
+      enabled: true,
+      json_path: "aq_label",
+      ha: { component: "sensor", device_class: null, unit: null, state_class: null },
+      semantic: { kind: "string" }
+    },
+    // Diagnostics (optional)
+    {
+      key: "status",
+      name: "Status",
+      enabled: true,
+      json_path: "status",
+      ha: { component: "sensor", device_class: null, unit: null, state_class: null, entity_category: "diagnostic" },
+      semantic: { kind: "string" }
+    },
+    {
+      key: "seq",
+      name: "Sequence",
+      enabled: true,
+      json_path: "seq",
+      ha: { component: "sensor", device_class: null, unit: null, state_class: "measurement", entity_category: "diagnostic" },
+      semantic: { kind: "number" }
+    },
+    {
+      key: "uptime_s",
+      name: "Uptime",
+      enabled: false,
+      json_path: "uptime_s",
+      ha: { component: "sensor", device_class: null, unit: "s", state_class: "measurement", entity_category: "diagnostic" },
+      semantic: { kind: "number" }
+    }
+  ];
+
+  // ----------------------------
+  // Presets (you can add more)
+  // ----------------------------
+  const PRESETS = {
+    "ENS160 + AHT2X (UART→MQTT)": {
+      device_id: "ens160_aht2x_001",
+      device_name: "Air Sensor 001",
+      manufacturer: "YourBrand",
+      model: "ENS160 + AHT2X UART",
+      sw_version: "1.2.3",
+      base_topic: "home/air/ens160_aht2x_001",
+      ha_prefix: "homeassistant",
+      availability_payloads: { online: "online", offline: "offline" },
+      metrics: METRIC_LIBRARY.map(m => ({ ...m })) // clone
+    }
+  };
+
+  // ----------------------------
+  // DOM helpers
+  // ----------------------------
+  const $ = (id) => document.getElementById(id);
+
+  function selectedTargets() {
+    return Array.from($("targetsSelect").selectedOptions).map(o => o.value);
+  }
+
+  function safeTopicPart(s) {
+    return (s || "")
+      .trim()
+      .replace(/\s+/g, "_")
+      .replace(/[^a-zA-Z0-9_\-]/g, "_");
+  }
+
+  function deepClone(obj) {
+    return JSON.parse(JSON.stringify(obj));
+  }
+
+  function nowISO() {
+    return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  }
+
+  // ----------------------------
+  // Build profile from UI
+  // ----------------------------
+  function getProfileFromUI() {
+    const device_id = safeTopicPart($("deviceId").value || "");
+    const base_topic = (() => {
+      const st = $("stateTopic").value.trim();
+      // If user provided explicit state topic, derive base from that if possible:
+      if (st.endsWith("/state")) return st.slice(0, -("/state".length));
+      // else if they left default, compute from device_id:
+      return `home/air/${device_id}`;
+    })();
+
+    const profile = {
+      generated_at: nowISO(),
+      version: 1,
+      targets: selectedTargets(),
+      mqtt: {
+        ha_prefix: $("haPrefix").value.trim() || "homeassistant",
+        base_topic,
+        state_topic: $("stateTopic").value.trim() || `${base_topic}/state`,
+        availability_topic: $("availabilityTopic").value.trim() || `${base_topic}/availability`,
+        info_topic: $("infoTopic").value.trim() || `${base_topic}/info`,
+        retain_discovery: $("useRetainConfig").checked,
+        include_availability: $("includeAvailability").checked,
+        availability_payloads: { online: "online", offline: "offline" }
+      },
+      device: {
+        id: device_id,
+        name: $("deviceName").value.trim() || device_id,
+        identifiers: [device_id],
+        manufacturer: $("manufacturer").value.trim() || "",
+        model: $("model").value.trim() || "",
+        sw_version: $("swVersion").value.trim() || ""
+      },
+      features: {
+        include_diagnostics: $("includeDiagnostics").checked
+      },
+      metrics: currentMetrics().map(m => ({ ...m }))
+    };
+
+    // Normalize metrics (turn off diagnostics if requested)
+    if (!profile.features.include_diagnostics) {
+      profile.metrics = profile.metrics.map(m => {
+        const isDiag = (m.ha && m.ha.entity_category === "diagnostic");
+        return isDiag ? { ...m, enabled: false } : m;
+      });
+    }
+
+    // Fill missing device.id
+    if (!profile.device.id) profile.device.id = "device_001";
+    if (!profile.device.identifiers?.length) profile.device.identifiers = [profile.device.id];
+
+    return profile;
+  }
+
+  // ----------------------------
+  // Metrics UI state
+  // ----------------------------
+  let metricsState = deepClone(PRESETS[Object.keys(PRESETS)[0]].metrics);
+
+  function currentMetrics() { return metricsState; }
+
+  function renderMetrics() {
+    const wrap = $("metricsList");
+    wrap.innerHTML = "";
+    metricsState.forEach((m, idx) => {
+      const el = document.createElement("div");
+      el.className = "metric";
+      el.innerHTML = `
+        <div class="top">
+          <div>
+            <div class="name">${escapeHtml(m.name || m.key)}</div>
+            <div class="sub mono">key: ${escapeHtml(m.key)} · json: ${escapeHtml(m.json_path)}</div>
+          </div>
+          <div class="toggle">
+            <input type="checkbox" ${m.enabled ? "checked" : ""} data-action="toggle" data-idx="${idx}">
+            <span class="sub">enabled</span>
+          </div>
+        </div>
+        <div class="grid">
+          <div>
+            <label>Display name</label>
+            <input data-action="name" data-idx="${idx}" value="${escapeAttr(m.name || "")}">
+          </div>
+          <div>
+            <label>JSON field (value_json.*)</label>
+            <input data-action="json_path" data-idx="${idx}" value="${escapeAttr(m.json_path || "")}">
+          </div>
+        </div>
+        <div class="grid3">
+          <div>
+            <label>HA device_class</label>
+            <input data-action="ha_device_class" data-idx="${idx}" value="${escapeAttr(m.ha?.device_class ?? "")}" placeholder="temperature, humidity, carbon_dioxide, ...">
+          </div>
+          <div>
+            <label>Unit</label>
+            <input data-action="ha_unit" data-idx="${idx}" value="${escapeAttr(m.ha?.unit ?? "")}" placeholder="°C, %RH, ppm, ppb">
+          </div>
+          <div>
+            <label>state_class</label>
+            <input data-action="ha_state_class" data-idx="${idx}" value="${escapeAttr(m.ha?.state_class ?? "")}" placeholder="measurement">
+          </div>
+        </div>
+        <div class="grid3">
+          <div>
+            <label>entity_category</label>
+            <input data-action="ha_entity_category" data-idx="${idx}" value="${escapeAttr(m.ha?.entity_category ?? "")}" placeholder="diagnostic">
+          </div>
+          <div>
+            <label>Kind</label>
+            <select data-action="kind" data-idx="${idx}">
+              ${kindOptions(m.semantic?.kind)}
+            </select>
+          </div>
+          <div>
+            <label>Unique ID suffix</label>
+            <input data-action="uid_suffix" data-idx="${idx}" value="${escapeAttr(m.key)}" placeholder="temperature, humidity, ...">
+          </div>
+        </div>
+        <div class="hint" data-kindbox="${idx}" style="margin-top:8px;"></div>
+      `;
+      wrap.appendChild(el);
+
+      // Kind-specific UI hint
+      const kindBox = el.querySelector(`[data-kindbox="${idx}"]`);
+      const kind = m.semantic?.kind || "number";
+      if (kind === "enum") {
+        const mapping = JSON.stringify(m.semantic?.enum_map || {}, null, 0);
+        kindBox.innerHTML = `
+          Enum mapping (edit in Profile JSON output if needed): <span class="mono">${escapeHtml(mapping)}</span><br/>
+          Best practice: publish both numeric code (<code class="inline">${escapeHtml(m.json_path)}</code>) and a label field (e.g. <code class="inline">aq_label</code>).
+        `;
+      } else if (kind === "string") {
+        kindBox.textContent = "String sensor: good for labels, states, modes.";
+      } else {
+        kindBox.textContent = "Numeric sensor: best for charts + automations. Use state_class=measurement when appropriate.";
+      }
+    });
+  }
+
+  function kindOptions(selected) {
+    const opts = ["number","string","enum"];
+    return opts.map(k => `<option value="${k}" ${k===selected?"selected":""}>${k}</option>`).join("");
+  }
+
+  function escapeHtml(s) {
+    return String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+  }
+  function escapeAttr(s) { return escapeHtml(s).replace(/"/g, "&quot;"); }
+
+  // ----------------------------
+  // Validation
+  // ----------------------------
+  function validateProfile(p) {
+    const issues = [];
+    if (!p.device?.id) issues.push("Device ID is empty.");
+    if (!p.mqtt?.state_topic) issues.push("State topic is empty.");
+    if (p.mqtt?.include_availability && !p.mqtt?.availability_topic) issues.push("Availability is enabled but availability topic is empty.");
+    const enabled = (p.metrics || []).filter(m => m.enabled);
+    if (!enabled.length) issues.push("No metrics enabled.");
+    enabled.forEach(m => {
+      if (!m.key) issues.push("A metric is missing 'key'.");
+      if (!m.json_path) issues.push(`Metric '${m.key}' is missing json_path.`);
+    });
+    return issues;
+  }
+
+  function renderValidation(issues) {
+    const box = $("validationBox");
+    if (!issues.length) {
+      box.innerHTML = `<div class="ok">Looks good.</div>`;
+      return;
+    }
+    box.innerHTML = `<div class="warn"><b>Please fix:</b><ul style="margin:6px 0 0 18px;">${
+      issues.map(i => `<li>${escapeHtml(i)}</li>`).join("")
+    }</ul></div>`;
+  }
+
+  // ----------------------------
+  // HA Discovery generator
+  // ----------------------------
+  function haDiscoveryTopic(haPrefix, nodeId, objectId, component="sensor") {
+    // homeassistant/sensor/<node_id>/<object_id>/config
+    return `${haPrefix}/${component}/${nodeId}/${objectId}/config`;
+  }
+
+  function buildHaConfig(profile, metric) {
+    const nodeId = profile.device.id;
+    const objectId = safeTopicPart(metric.key);
+    const uniq = `${nodeId}_${objectId}`;
+
+    const cfg = {
+      name: metric.name || objectId,
+      unique_id: uniq,
+      state_topic: profile.mqtt.state_topic,
+      value_template: `{{ value_json.${metric.json_path} }}`,
+      device: {
+        identifiers: profile.device.identifiers || [nodeId],
+        name: profile.device.name || nodeId,
+        manufacturer: profile.device.manufacturer || undefined,
+        model: profile.device.model || undefined,
+        sw_version: profile.device.sw_version || undefined
+      }
+    };
+
+    // Optional HA fields
+    if (metric.ha?.device_class) cfg.device_class = metric.ha.device_class;
+    if (metric.ha?.unit) cfg.unit_of_measurement = metric.ha.unit;
+    if (metric.ha?.state_class) cfg.state_class = metric.ha.state_class;
+    if (metric.ha?.entity_category) cfg.entity_category = metric.ha.entity_category;
+
+    // Availability
+    if (profile.mqtt.include_availability) {
+      cfg.availability_topic = profile.mqtt.availability_topic;
+      cfg.payload_available = profile.mqtt.availability_payloads?.online ?? "online";
+      cfg.payload_not_available = profile.mqtt.availability_payloads?.offline ?? "offline";
+    }
+
+    // Clean undefined
+    pruneUndefined(cfg);
+    return { topic: haDiscoveryTopic(profile.mqtt.ha_prefix, nodeId, objectId, metric.ha?.component || "sensor"), payload: cfg };
+  }
+
+  function pruneUndefined(obj) {
+    if (!obj || typeof obj !== "object") return obj;
+    Object.keys(obj).forEach(k => {
+      const v = obj[k];
+      if (v === undefined) delete obj[k];
+      else if (typeof v === "object" && v !== null) pruneUndefined(v);
+    });
+    return obj;
+  }
+
+  // ----------------------------
+  // Other output helpers
+  // ----------------------------
+  function buildCanonicalTopics(profile) {
+    const base = profile.mqtt.base_topic || profile.mqtt.state_topic.replace(/\/state$/, "");
+    const lines = [];
+    lines.push(`Base topic: ${base}`);
+    lines.push(`  state:        ${profile.mqtt.state_topic}`);
+    lines.push(`  availability: ${profile.mqtt.availability_topic}`);
+    lines.push(`  info:         ${profile.mqtt.info_topic}`);
+    lines.push(`  command:      ${base}/command (optional future)`);
+    lines.push("");
+    lines.push("Suggested state JSON fields (enabled metrics):");
+    profile.metrics.filter(m => m.enabled).forEach(m => {
+      const kind = m.semantic?.kind || "number";
+      lines.push(`  - ${m.json_path}  (${kind})  → "${m.name}"`);
+    });
+    lines.push("");
+    lines.push("Receiver best-practice fields (optional):");
+    lines.push("  - device_id (string URN), seq (uint), ts (unix), status (string), uptime_s (number)");
+    return lines.join("\n");
+  }
+
+  function buildNotes(profile) {
+    const t = profile.targets || [];
+    const parts = [];
+
+    parts.push(`<b>Canonical publishing</b><br/>`);
+    parts.push(`• Publish JSON to <span class="mono">${escapeHtml(profile.mqtt.state_topic)}</span> at your sampling interval.<br/>`);
+    if (profile.mqtt.include_availability) {
+      parts.push(`• Use MQTT Last Will for <span class="mono">${escapeHtml(profile.mqtt.availability_topic)}</span>:
+        online="${escapeHtml(profile.mqtt.availability_payloads.online)}", offline="${escapeHtml(profile.mqtt.availability_payloads.offline)}".<br/>`);
+    }
+    parts.push(`• Publish HA discovery configs with <span class="mono">retain=true</span> so HA can discover after reboot.<br/><br/>`);
+
+    parts.push(`<b>Enum / rating fields (e.g. AQU-UBA)</b><br/>`);
+    parts.push(`• Best practice: publish numeric code <span class="mono">aq_uba</span> + a human label <span class="mono">aq_label</span>.
+      Keep the mapping in your gateway/firmware, and show both in HA.<br/><br/>`);
+
+    if (t.includes("openhab")) {
+      parts.push(`<b>openHAB</b><br/>`);
+      parts.push(`• openHAB MQTT works great with either individual topics per metric or a single JSON state topic plus JSONPath/transform. Your canonical single-state-topic approach remains compatible.<br/><br/>`);
+    }
+    if (t.includes("homie")) {
+      parts.push(`<b>Homie convention</b><br/>`);
+      parts.push(`• If you later want Homie, you can keep the same base topic and add Homie-style meta topics.
+      The state JSON can remain your “source of truth” while a bridge republishes Homie nodes/properties.<br/><br/>`);
+    }
+
+    parts.push(`<b>Upgrade strategy</b><br/>`);
+    parts.push(`• Never change <span class="mono">device_id</span> / <span class="mono">unique_id</span> once deployed. Add new fields instead.<br/>`);
+    parts.push(`• If you ever need to remove an HA entity: publish an empty payload to its discovery config topic.<br/>`);
+
+    return parts.join("");
+  }
+
+  // ----------------------------
+  // Generate output
+  // ----------------------------
+  function generateAll() {
+    const profile = getProfileFromUI();
+    const issues = validateProfile(profile);
+    renderValidation(issues);
+
+    // Still generate even with warnings (useful during editing)
+    $("profileOut").value = JSON.stringify(profile, null, 2);
+
+    // Canonical topics
+    $("mqttOut").value = buildCanonicalTopics(profile);
+
+    // HA discovery output
+    const lines = [];
+    const enabledMetrics = profile.metrics.filter(m => m.enabled);
+
+    if (!profile.targets.includes("ha")) {
+      lines.push("# Home Assistant output not selected in Target outputs.");
+    } else {
+      lines.push(`# Home Assistant MQTT Discovery publishes (retain=${profile.mqtt.retain_discovery ? "true" : "false"})`);
+      lines.push(`# Device: ${profile.device.name} (${profile.device.id})`);
+      lines.push("");
+
+      enabledMetrics.forEach(m => {
+        const gen = buildHaConfig(profile, m);
+        lines.push(`## ${m.name}  (key=${m.key})`);
+        lines.push(`TOPIC: ${gen.topic}`);
+        lines.push(`RETAIN: ${profile.mqtt.retain_discovery ? "true" : "false"}`);
+        lines.push("PAYLOAD:");
+        lines.push(JSON.stringify(gen.payload, null, 2));
+        lines.push("");
+      });
+
+      lines.push("## Example state message");
+      lines.push(`TOPIC: ${profile.mqtt.state_topic}`);
+      lines.push("PAYLOAD:");
+      lines.push(JSON.stringify(exampleState(profile), null, 2));
+      lines.push("");
+
+      if (profile.mqtt.include_availability) {
+        lines.push("## Availability example");
+        lines.push(`TOPIC: ${profile.mqtt.availability_topic}`);
+        lines.push(`PAYLOAD: ${profile.mqtt.availability_payloads.online}`);
+        lines.push("");
+        lines.push(`# Configure bridge client LWT to publish "${profile.mqtt.availability_payloads.offline}" to the availability topic on disconnect.`);
+      }
+    }
+
+    $("haOut").value = lines.join("\n");
+
+    // Notes
+    $("notesOut").innerHTML = buildNotes(profile);
+  }
+
+  function exampleState(profile) {
+    const o = {
+      device_id: `urn:dev:yourorg:${profile.device.id}`,
+      seq: 1,
+      status: "ok"
+    };
+    profile.metrics.filter(m => m.enabled).forEach(m => {
+      const kind = m.semantic?.kind || "number";
+      if (m.json_path in o) return;
+      if (kind === "number") o[m.json_path] = 0;
+      else if (kind === "string") o[m.json_path] = "";
+      else if (kind === "enum") {
+        // pick first enum key if available
+        const map = m.semantic?.enum_map || {};
+        const firstKey = Object.keys(map)[0] || "1";
+        o[m.json_path] = Number.isFinite(+firstKey) ? +firstKey : firstKey;
+      } else o[m.json_path] = null;
+    });
+    return o;
+  }
+
+  // ----------------------------
+  // Preset load / reset
+  // ----------------------------
+  function loadPreset(name) {
+    const p = deepClone(PRESETS[name]);
+    $("deviceId").value = p.device_id;
+    $("deviceName").value = p.device_name;
+    $("manufacturer").value = p.manufacturer;
+    $("model").value = p.model;
+    $("swVersion").value = p.sw_version;
+    $("haPrefix").value = p.ha_prefix;
+
+    // Derive topics from base_topic
+    $("stateTopic").value = `${p.base_topic}/state`;
+    $("availabilityTopic").value = `${p.base_topic}/availability`;
+    $("infoTopic").value = `${p.base_topic}/info`;
+
+    metricsState = deepClone(p.metrics);
+    renderMetrics();
+    generateAll();
+  }
+
+  function resetAll() {
+    const first = Object.keys(PRESETS)[0];
+    $("presetSelect").value = first;
+    loadPreset(first);
+  }
+
+  // ----------------------------
+  // Import / Export profile JSON
+  // ----------------------------
+  function exportProfile() {
+    const profile = getProfileFromUI();
+    const blob = new Blob([JSON.stringify(profile, null, 2)], { type: "application/json" });
+    downloadBlob(blob, `${profile.device.id || "device"}_profile.json`);
+  }
+
+  function importProfileFromText(txt) {
+    let p;
+    try { p = JSON.parse(txt); }
+    catch (e) { alert("Invalid JSON."); return; }
+
+    // Apply to UI (best effort)
+    $("deviceId").value = p.device?.id || "";
+    $("deviceName").value = p.device?.name || "";
+    $("manufacturer").value = p.device?.manufacturer || "";
+    $("model").value = p.device?.model || "";
+    $("swVersion").value = p.device?.sw_version || "";
+
+    $("haPrefix").value = p.mqtt?.ha_prefix || "homeassistant";
+    $("stateTopic").value = p.mqtt?.state_topic || "";
+    $("availabilityTopic").value = p.mqtt?.availability_topic || "";
+    $("infoTopic").value = p.mqtt?.info_topic || "";
+
+    $("useRetainConfig").checked = !!p.mqtt?.retain_discovery;
+    $("includeAvailability").checked = p.mqtt?.include_availability !== false;
+    $("includeDiagnostics").checked = p.features?.include_diagnostics !== false;
+
+    // Targets
+    const targets = new Set(p.targets || ["ha"]);
+    Array.from($("targetsSelect").options).forEach(o => o.selected = targets.has(o.value));
+
+    // Metrics
+    if (Array.isArray(p.metrics)) metricsState = deepClone(p.metrics);
+    renderMetrics();
+    generateAll();
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  // ----------------------------
+  // Wire events
+  // ----------------------------
+  function wireTabs() {
+    document.querySelectorAll(".tab").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        const tab = btn.dataset.tab;
+        document.querySelectorAll(".outPane").forEach(p => p.style.display = "none");
+        $(`out-${tab}`).style.display = "";
+      });
+    });
+  }
+
+  function wireMetricsEdits() {
+    $("metricsList").addEventListener("input", (ev) => {
+      const t = ev.target;
+      const idx = +t.dataset.idx;
+      const action = t.dataset.action;
+      if (!Number.isFinite(idx) || !action) return;
+      const m = metricsState[idx];
+
+      if (action === "toggle") m.enabled = t.checked;
+      else if (action === "name") m.name = t.value;
+      else if (action === "json_path") m.json_path = t.value.trim();
+      else if (action === "ha_device_class") { m.ha = m.ha || {}; m.ha.device_class = t.value.trim() || null; }
+      else if (action === "ha_unit") { m.ha = m.ha || {}; m.ha.unit = t.value.trim() || null; }
+      else if (action === "ha_state_class") { m.ha = m.ha || {}; m.ha.state_class = t.value.trim() || null; }
+      else if (action === "ha_entity_category") { m.ha = m.ha || {}; m.ha.entity_category = t.value.trim() || null; }
+      else if (action === "kind") {
+        m.semantic = m.semantic || {};
+        m.semantic.kind = t.value;
+        if (t.value === "enum" && !m.semantic.enum_map) {
+          m.semantic.enum_map = { "1":"one", "2":"two" };
+        }
+      } else if (action === "uid_suffix") {
+        // For now we bind unique_id to key; keep UI for future extension
+        m.key = safeTopicPart(t.value) || m.key;
+      }
+
+      // Normalize empties
+      if (m.ha) {
+        if (m.ha.device_class === "") m.ha.device_class = null;
+        if (m.ha.unit === "") m.ha.unit = null;
+        if (m.ha.state_class === "") m.ha.state_class = null;
+        if (m.ha.entity_category === "") m.ha.entity_category = null;
+      }
+
+      renderMetrics();      // re-render to keep key changes consistent
+      generateAll();        // live-update outputs
+    });
+
+    // checkbox clicks need change handler too
+    $("metricsList").addEventListener("change", (ev) => {
+      const t = ev.target;
+      if (t.dataset.action === "toggle") {
+        metricsState[+t.dataset.idx].enabled = t.checked;
+        generateAll();
+      }
+    });
+  }
+
+  function wireButtons() {
+    $("generateBtn").addEventListener("click", generateAll);
+    $("resetBtn").addEventListener("click", resetAll);
+
+    $("exportProfileBtn").addEventListener("click", exportProfile);
+    $("importProfileBtn").addEventListener("click", () => $("importFile").click());
+    $("importFile").addEventListener("change", async (ev) => {
+      const file = ev.target.files?.[0];
+      if (!file) return;
+      const txt = await file.text();
+      importProfileFromText(txt);
+      ev.target.value = "";
+    });
+
+    $("copyHaBtn").addEventListener("click", () => navigator.clipboard.writeText($("haOut").value));
+    $("copyMqttBtn").addEventListener("click", () => navigator.clipboard.writeText($("mqttOut").value));
+    $("copyProfileBtn").addEventListener("click", () => navigator.clipboard.writeText($("profileOut").value));
+
+    $("downloadHaBtn").addEventListener("click", () => downloadBlob(new Blob([$("haOut").value],{type:"text/plain"}), "ha_discovery_publishes.txt"));
+    $("downloadMqttBtn").addEventListener("click", () => downloadBlob(new Blob([$("mqttOut").value],{type:"text/plain"}), "mqtt_topics.txt"));
+    $("downloadProfileBtn").addEventListener("click", () => downloadBlob(new Blob([$("profileOut").value],{type:"application/json"}), "device_profile.json"));
+  }
+
+  function wirePresetSelect() {
+    const sel = $("presetSelect");
+    sel.innerHTML = "";
+    Object.keys(PRESETS).forEach(name => {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener("change", () => loadPreset(sel.value));
+  }
+
+  function wireLiveBaseEdits() {
+    const ids = ["deviceId","deviceName","manufacturer","model","swVersion","stateTopic","availabilityTopic","infoTopic","haPrefix","useRetainConfig","includeAvailability","includeDiagnostics"];
+    ids.forEach(id => {
+      $(id).addEventListener("input", generateAll);
+      $(id).addEventListener("change", generateAll);
+    });
+    $("targetsSelect").addEventListener("change", generateAll);
+
+    $("deviceId").addEventListener("input", () => {
+      // Auto-derive default topics if user hasn't customized them much:
+      const did = safeTopicPart($("deviceId").value);
+      if (!did) return;
+      const suggestedBase = `home/air/${did}`;
+      // Only overwrite if current matches old pattern or is empty:
+      const st = $("stateTopic").value.trim();
+      if (!st || /home\/air\/.*\/state$/.test(st)) $("stateTopic").value = `${suggestedBase}/state`;
+      const at = $("availabilityTopic").value.trim();
+      if (!at || /home\/air\/.*\/availability$/.test(at)) $("availabilityTopic").value = `${suggestedBase}/availability`;
+      const it = $("infoTopic").value.trim();
+      if (!it || /home\/air\/.*\/info$/.test(it)) $("infoTopic").value = `${suggestedBase}/info`;
+      generateAll();
+    });
+  }
+
+  // ----------------------------
+  // Init
+  // ----------------------------
+  function init() {
+    wireTabs();
+    wirePresetSelect();
+    wireMetricsEdits();
+    wireButtons();
+    wireLiveBaseEdits();
+
+    resetAll();
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>
