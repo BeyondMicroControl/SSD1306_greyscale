@@ -78,8 +78,27 @@
     <div class="flex">
       <button id="quantizeBtn" title="Quantize current canvas to 4 grayscale levels">Quantize 4-level</button>
       <button id="splitBtn" title="Split 4-level image into two B/W outputs">Split → 2×B/W</button>
+
+
+    <label class="muted" style="display:flex;align-items:center;gap:8px;margin:0;">
+      <input id="xorChk" type="checkbox" />
+      XOR bitmap2 with bitmap1 before compression
+    </label>
+
+    <div hidden>
+    <label class="muted" style="display:flex;align-items:center;gap:8px;margin:0;">
+    <input id="xyChk" type="checkbox" />
+    X->Y transform both bitmaps before compression
+    </label>
+    </div>
+
       <div class="spacer"></div>
-      <button id="convertBtn">Convert → 2 Byte Arrays</button>
+
+
+<button id="convertBtn">Convert → 2 Byte Arrays</button>
+<button id="zrBtn" disabled title="Compress bitmap1+bitmap2 as one array using ZeroRun">Compress ZeroRun</button>
+<button id="pbBtn" disabled title="Compress bitmap1+bitmap2 as one array using PackBits">Compress PackBits</button>
+
     </div>
   </div>
 
@@ -124,6 +143,10 @@
       WHITE: 3
     });
 
+    let lastBytes1 = null;
+    let lastBytes2 = null;
+    let lastCombined = null;
+
     const imgInput = document.getElementById('imgInput');
     const sizeSelect = document.getElementById('sizeSelect');
 
@@ -139,6 +162,10 @@
     const output = document.getElementById('output');
     const statusEl = document.getElementById('status');
     const dimBadge = document.getElementById('dimBadge');
+
+    const useXor = document.getElementById('xorChk').checked;
+    const useXY  = document.getElementById('xyChk').checked;
+
 
     function populateFormats() {
       sizeSelect.innerHTML = '';
@@ -282,6 +309,326 @@
       return lines.join(',\n');
     }
 
+function concatArrays(a, b) {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+function xorSecondHalfInPlace(combined) {
+  // combined layout: [A...][B...], with equal halves
+  const half = combined.length >>> 1;
+  for (let i = 0; i < half; i++) {
+    combined[half + i] ^= combined[i]; // B ^= A
+  }
+  return combined;
+}
+
+function xyTransformHalf_PageMajorToColMajor(src, w, pages) {
+  // src length = w*pages, layout: src[page*w + x]
+  // dst layout: dst[x*pages + page]
+  const dst = new Uint8Array(src.length);
+  for (let x = 0; x < w; x++) {
+    const base = x * pages;
+    for (let p = 0; p < pages; p++) {
+      dst[base + p] = src[p * w + x];
+    }
+  }
+  return dst;
+}
+
+function xyTransformHalf_ColMajorToPageMajor(src, w, pages) {
+  // inverse of above
+  const dst = new Uint8Array(src.length);
+  for (let p = 0; p < pages; p++) {
+    const row = p * w;
+    for (let x = 0; x < w; x++) {
+      dst[row + x] = src[x * pages + p];
+    }
+  }
+  return dst;
+}
+
+// Apply X->Y to BOTH halves of combined [A][B]
+function xyTransformBothHalves(combined, w, pages) {
+  const half = combined.length >>> 1;
+  const A = combined.slice(0, half);
+  const B = combined.slice(half);
+
+  const A2 = xyTransformHalf_PageMajorToColMajor(A, w, pages);
+  const B2 = xyTransformHalf_PageMajorToColMajor(B, w, pages);
+
+  const out = new Uint8Array(combined.length);
+  out.set(A2, 0);
+  out.set(B2, half);
+  return out;
+}
+
+
+
+// ---------- ZeroRun encoder ----------
+// Format:
+// token t < 128  => literal run length = t+1, followed by that many bytes
+// token t >= 128 => zero run length = t-127, outputs that many 0x00 bytes
+function zerorunCompress(raw) {
+  const out = [];
+  let i = 0;
+
+  while (i < raw.length) {
+    // Zero run?
+    if (raw[i] === 0) {
+      let z = 1;
+      while (i + z < raw.length && raw[i + z] === 0 && z < 128) z++;
+
+      // Encode as zero-run token: 128..255 means 1..128 zeros
+      out.push(127 + z);
+      i += z;
+      continue;
+    }
+
+    // Literal run: until next zero-run start OR 128 bytes
+    const litStart = i;
+    let n = 0;
+    while (i < raw.length && raw[i] !== 0 && n < 128) { i++; n++; }
+
+    out.push(n - 1); // token 0..127 means 1..128 literal bytes
+    for (let k = 0; k < n; k++) out.push(raw[litStart + k]);
+  }
+
+  return new Uint8Array(out);
+}
+
+// ---------- PackBits encoder ----------
+// Standard PackBits:
+// n = 0..127: copy next n+1 bytes literal
+// n = -1..-127: repeat next byte (1 - n) times  (i.e., 2..128 times)
+// n = -128: noop (not used here)
+function packbitsCompress(raw) {
+  const out = [];
+  let i = 0;
+
+  function emitLiteral(buf) {
+    // buf length 1..128
+    out.push(buf.length - 1);
+    for (let b of buf) out.push(b);
+  }
+  function emitRepeat(byteVal, count) {
+    // count 2..128
+    out.push((256 - (count - 1)) & 0xFF); // -(count-1) as uint8
+    out.push(byteVal);
+  }
+
+  while (i < raw.length) {
+    // Detect repeat run
+    let runByte = raw[i];
+    let runLen = 1;
+    while (i + runLen < raw.length && raw[i + runLen] === runByte && runLen < 128) runLen++;
+
+    // Only worth encoding repeat if len >= 3 (classic PackBits heuristic)
+    if (runLen >= 3) {
+      emitRepeat(runByte, runLen);
+      i += runLen;
+      continue;
+    }
+
+    // Otherwise build a literal block up to 128, but stop before a repeat >=3 starts
+    const lit = [];
+    while (i < raw.length && lit.length < 128) {
+      // Check if a repeat run >=3 starts at i
+      runByte = raw[i];
+      runLen = 1;
+      while (i + runLen < raw.length && raw[i + runLen] === runByte && runLen < 128) runLen++;
+      if (runLen >= 3) break;
+
+      lit.push(raw[i]);
+      i++;
+    }
+    emitLiteral(lit);
+  }
+
+  return new Uint8Array(out);
+}
+
+function toHexLinesFromUint8(bytes, perLine = 16) {
+  const arr = Array.from(bytes);
+  return toHexLines(arr, perLine);
+}
+
+function arduinoDecompressSnippet(codecName, packedName, packedLen, rawLen, useXor, useXY, w, h) 
+{
+
+
+  const pages = (h / 8) | 0;
+
+  const postRestore = `
+  // Post-decompression transforms from header flags:
+  // bit0: bitmap2 stored as (bitmap2 ^ bitmap1)
+  // bit1: both halves stored in X->Y (col-major) layout
+
+  const uint16_t half = raw_len / 2;
+
+  if (flags & 0x01) {
+    // Restore bitmap2: (bitmap2^bitmap1) ^ bitmap1
+    for (uint16_t i = 0; i < half; i++) {
+      decoded[half + i] ^= decoded[i];
+    }
+  }
+`;
+/*
+  if (flags & 0x02) {
+    // Inverse X->Y on both halves: col-major -> SSD1306 page-major
+    const uint8_t W = ${w};
+    const uint8_t PAGES = ${pages};
+    const uint16_t BYTES = (uint16_t)W * PAGES;
+
+    // Scratch for one half (fits 64x32=256, 128x64=1024)
+    static uint8_t tmp[${w * pages}];
+
+    auto invXY = [&](uint8_t* buf) {
+      for (uint8_t p = 0; p < PAGES; p++) {
+        uint16_t row = (uint16_t)p * W;
+        for (uint8_t x = 0; x < W; x++) {
+          tmp[row + x] = buf[(uint16_t)x * PAGES + p];
+        }
+      }
+      for (uint16_t i = 0; i < BYTES; i++) buf[i] = tmp[i];
+    };
+
+    invXY(decoded);
+    invXY(decoded + half);
+  }
+`;
+*/
+
+
+  // Provide one snippet that compiles on AVR (PROGMEM read)
+  if (codecName === "ZeroRun") {
+    return `
+// ---- Arduino ZeroRun decompressor (PROGMEM source) ----
+#include <Arduino.h>
+#include <avr/pgmspace.h>
+
+static bool decode_zerorun_P(const uint8_t* srcP, uint16_t srcLen, uint8_t* dst, uint16_t dstLen) {
+  uint16_t si = 0, di = 0;
+  while (si < srcLen && di < dstLen) {
+    uint8_t t = pgm_read_byte(srcP + si++);
+    if (t < 128) {
+      uint16_t n = (uint16_t)t + 1u;
+      if (si + n > srcLen) return false;
+      if (di + n > dstLen) return false;
+      while (n--) dst[di++] = pgm_read_byte(srcP + si++);
+    } else {
+      uint16_t n = (uint16_t)t - 127u; // 1..128
+      if (di + n > dstLen) return false;
+      while (n--) dst[di++] = 0x00;
+    }
+  }
+  return (di == dstLen);
+}
+
+// Example: decompress into a RAM buffer (bitmap1 followed by bitmap2)
+static uint8_t decoded[${rawLen}];
+
+void decompressExample() {
+  const uint8_t flags = pgm_read_byte(${packedName});
+  const uint8_t* src = ${packedName} + 1;
+  const uint16_t srcLen = sizeof(${packedName}) - 1;
+  const bool ok = decode_zerorun_P(src, srcLen, decoded, ${rawLen});
+
+if (!ok) {
+    // handle error
+  }
+
+  ${postRestore}
+
+  // decoded[] now equals: original bitmap1 bytes then bitmap2 bytes
+}
+
+`;
+  }
+
+  // PackBits
+  return `
+// ---- Arduino PackBits decompressor (PROGMEM source) ----
+#include <Arduino.h>
+#include <avr/pgmspace.h>
+
+static bool decode_packbits_P(const uint8_t* srcP, uint16_t srcLen, uint8_t* dst, uint16_t dstLen) {
+  uint16_t si = 0, di = 0;
+  while (si < srcLen && di < dstLen) {
+    int8_t n = (int8_t)pgm_read_byte(srcP + si++);
+    if (n >= 0) {
+      uint16_t count = (uint16_t)n + 1u;
+      if (si + count > srcLen) return false;
+      if (di + count > dstLen) return false;
+      while (count--) dst[di++] = pgm_read_byte(srcP + si++);
+    } else if (n != -128) {
+      uint16_t count = (uint16_t)(1 - n); // 2..128
+      if (si >= srcLen) return false;
+      uint8_t v = pgm_read_byte(srcP + si++);
+      if (di + count > dstLen) return false;
+      while (count--) dst[di++] = v;
+    } // -128 => noop
+  }
+  return (di == dstLen);
+}
+
+// Example: decompress into a RAM buffer (bitmap1 followed by bitmap2)
+static uint8_t decoded[${rawLen}];
+
+void decompressExample() {
+  const uint8_t flags = pgm_read_byte(${packedName});
+  const uint8_t* src = ${packedName} + 1;
+  const uint16_t srcLen = sizeof(${packedName}) - 1;
+  const bool ok = decode_packbits_P(src, srcLen, decoded, ${rawLen});
+  
+  
+  if (!ok) {
+    // handle error
+  }
+
+  ${postRestore}
+
+  // decoded[] now equals: original bitmap1 bytes then bitmap2 bytes
+}
+
+`;
+}
+
+function generatePackedOutput(codecLabel, packedArrayName, packedBytes, rawBytes, w, h, useXor, useXY)
+{
+  const rawLen = rawBytes.length;
+  const flags = (useXor ? 1 : 0) | (useXY ? 2 : 0);
+
+  // Prefix packed stream with 1-byte header (flags)
+  const packedWithHdr = new Uint8Array(packedBytes.length + 1);
+  packedWithHdr[0] = flags;
+  packedWithHdr.set(packedBytes, 1);
+
+  const packedLen2 = packedWithHdr.length;
+  const ratio = (packedLen2 / rawLen * 100).toFixed(1);
+
+
+return `// ${codecLabel} compressed package for SSD1306 bitmap1+bitmap2 (concatenated)
+// Flags byte at start: bit0=useXor, bit1=X->Y
+// Flags used: 0x${flags.toString(16).padStart(2,'0')}
+// XOR pre-process on bitmap2: ${useXor ? 'YES (stored as bitmap2^bitmap1)' : 'NO'}
+// X->Y transform: ${useXY ? 'YES (page-major -> col-major before compression)' : 'NO'}
+// Raw length = ${rawLen} bytes
+// Packed length (incl 1-byte header) = ${packedLen2} bytes (${ratio}% of raw)
+
+#include <Arduino.h>
+#include <avr/pgmspace.h>
+
+const uint8_t ${packedArrayName}[] PROGMEM = {
+${toHexLinesFromUint8(packedWithHdr)}
+};
+
+${arduinoDecompressSnippet(codecLabel, packedArrayName, packedLen2, rawLen, useXor, useXY, w, h)}
+`;
+}
+
     function generateOutputTwo(bytes1, bytes2) {
       const w = canvas.width, h = canvas.height;
       const count = bytes1.length;
@@ -368,9 +715,70 @@ ${toHexLines(bytes2)}
       const bytes1 = buildSSD1306BitmapFromBWMap(lastBW.out1);
       const bytes2 = buildSSD1306BitmapFromBWMap(lastBW.out2);
 
+      lastBytes1 = new Uint8Array(bytes1);
+      lastBytes2 = new Uint8Array(bytes2);
+      lastCombined = concatArrays(lastBytes1, lastBytes2);
+
       output.value = generateOutputTwo(bytes1, bytes2);
-      statusEl.textContent = `Converted to 2×${bytes1.length} bytes.`;
+      statusEl.textContent = `Converted to 2×${bytes1.length} bytes (combined ${lastCombined.length}).`;
+
+      document.getElementById('zrBtn').disabled = false;
+      document.getElementById('pbBtn').disabled = false;
+
     });
+
+    document.getElementById('zrBtn').addEventListener('click', () => {
+      if (!lastCombined) { statusEl.textContent = 'Please Convert first.'; return; }
+      const { w, h } = parseWH(sizeSelect.value);
+
+      const useXor = document.getElementById('xorChk').checked;
+      const useXY  = document.getElementById('xyChk').checked;
+
+      let raw = new Uint8Array(lastCombined);
+
+      if (useXY) {
+        const pages = (h / 8) | 0;
+        raw = xyTransformBothHalves(raw, w, pages);
+      }
+      if (useXor) {
+        xorSecondHalfInPlace(raw);
+      }
+
+      const packed = zerorunCompress(raw);
+      output.value = generatePackedOutput('ZeroRun', `zerorun_bitmap_${w}x${h}`, packed, raw, w, h, useXor, useXY);
+
+
+      statusEl.textContent = `ZeroRun packed: ${packed.length} bytes (raw ${raw.length}).`;
+    });
+
+
+    document.getElementById('pbBtn').addEventListener('click', () => {
+      if (!lastCombined) { statusEl.textContent = 'Please Convert first.'; return; }
+      const { w, h } = parseWH(sizeSelect.value);
+
+    const useXor = document.getElementById('xorChk').checked;
+    const useXY  = document.getElementById('xyChk').checked;
+
+    let raw = new Uint8Array(lastCombined);
+
+    if (useXY) {
+      const pages = (h / 8) | 0;
+      raw = xyTransformBothHalves(raw, w, pages);
+    }
+    if (useXor) {
+      xorSecondHalfInPlace(raw);
+    }
+
+    const packed = packbitsCompress(raw);
+    output.value = generatePackedOutput('PackBits', `packbits_bitmap_${w}x${h}`, packed, raw, w, h, useXor, useXY);
+
+
+
+      statusEl.textContent = `PackBits packed: ${packed.length} bytes (raw ${raw.length}).`;
+    });
+
+
+
 
     document.getElementById('copyBtn').addEventListener('click', async () => {
       try {
@@ -380,6 +788,8 @@ ${toHexLines(bytes2)}
         statusEl.textContent = 'Copy failed. You can copy manually from the textbox.';
       }
     });
+
+
 
     // Init
     populateFormats();
