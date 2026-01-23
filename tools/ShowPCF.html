@@ -110,7 +110,8 @@ function glyphPadBytes(fmt) {
   if (v === 0x20) return 4;
   return 8;
 }
-function bitOrderLSB(fmt) { return (fmt & PCF_BIT_MASK) !== 0; }
+
+function bitOrderLSB(fmt) { return (fmt & PCF_BIT_MASK) === 0; }
 function byteOrderLSB(fmt) { return (fmt & PCF_BYTE_MASK) !== 0; }
 
 // ---- Binary helpers ----
@@ -238,7 +239,9 @@ function parsePCF(arrayBuffer) {
     const bitLSB = bitOrderLSB(fmt);
     const byteLSB = byteOrderLSB(fmt);
 
-    return { fmt, glyphCount, offsets, bitmapSizes, dataStart, pad, bitLSB, byteLSB };
+    const scanUnit = scanUnitBytes(fmt);
+
+    return { fmt, glyphCount, offsets, bitmapSizes, dataStart, pad, bitLSB, byteLSB, scanUnit };
   }
 
   // --- BDF_ENCODINGS table ---
@@ -290,6 +293,11 @@ function iterCodepoints(enc) {
   return out;
 }
 
+function scanUnitBytes(fmt) {
+  // mask values: 0x00,0x04,0x08,0x0C => 1,2,4,8
+  return 1 << ((fmt & PCF_SCANUNIT_MASK) >> 2);
+}
+
 // Extract glyph bitmap to a boolean 2D array using metrics and bitmap offset.
 function getGlyphBitmap(pcf, glyphIndex) {
   const { metrics, bitmaps, u8 } = pcf;
@@ -316,9 +324,23 @@ function getGlyphBitmap(pcf, glyphIndex) {
     const rowOff = start + y * rowBytes;
 
     for (let x = 0; x < w; x++) {
-      const byteIndex = (x >> 3);
+
       const bitIndex = x & 7;
-      let b = u8[rowOff + byteIndex] ?? 0;
+
+
+        const byteIndex = (x >> 3);
+
+        const su = bitmaps.scanUnit || 1;           // 1/2/4/8
+        const unitStart = Math.floor(byteIndex / su) * su;
+        const inUnit = byteIndex % su;
+
+        const bi = bitmaps.byteLSB
+        ? (unitStart + (su - 1 - inUnit))         // reverse bytes *within* the scan unit
+        : (unitStart + inUnit);
+
+        let b = u8[rowOff + bi] ?? 0;
+
+
 
       // handle bit order
       if (bitmaps.bitLSB) {
@@ -337,6 +359,26 @@ function getGlyphBitmap(pcf, glyphIndex) {
   return { w, h, pixels, metrics: m };
 }
 
+function parseAccelerators(pcf) {
+  const t = pcf.toc.find(x => x.type === 2) || pcf.toc.find(x => x.type === 256);
+  if (!t) return { fontAscent: 0, fontDescent: 0 };
+
+  const r = new Reader(pcf.u8.buffer);
+  r.seek(t.offset);
+  const fmt = r.u32(true);
+  const le = !isBigEndianNumeric(fmt);
+
+  // Skip 8 booleans/bytes in the accelerator header
+  r.bytes(8);
+
+  // In X11 PCF accelerators, these come next as int16:
+  const fontAscent  = r.i16(le);
+  const fontDescent = r.i16(le);
+
+  return { fontAscent, fontDescent };
+}
+
+
 function printableChar(cp) {
   // Control chars: show a visible placeholder
   if (cp < 0x20) return "␀";
@@ -352,39 +394,49 @@ function fmtCaption(cp) {
   return { dec, hex, ch, safe };
 }
 
-function renderGlyphToCanvas(canvas, glyph, invert=false) {
-  const ctx = canvas.getContext("2d"); // <-- no {alpha:false}
+function renderGlyphToCanvas(canvas, glyph, invert=false, accel={fontAscent:0,fontDescent:0}) {
+  const ctx = canvas.getContext("2d");
   const W = canvas.width, H = canvas.height;
 
-  // background
+  // background + ink
   ctx.fillStyle = invert ? "#000" : "#fff";
   ctx.fillRect(0, 0, W, H);
-
-  const gw = glyph.w, gh = glyph.h;
-  if (gw <= 0 || gh <= 0) return;
-
-  // choose ink color
   ctx.fillStyle = invert ? "#fff" : "#000";
 
-  const scale = Math.max(1, Math.floor(Math.min(W / gw, H / gh)));
-  const drawW = gw * scale;
-  const drawH = gh * scale;
+  const m = glyph.metrics;
+  if (!m) return;
+
+  // Character cell (baseline-based)
+  const cellW = Math.max(1, m.width || (m.right - m.left)); // advance width is best
+  const cellH = Math.max(1, (accel.fontAscent + accel.fontDescent) || (m.ascent + m.descent));
+  const baseline = (accel.fontAscent || m.ascent);
+
+  // Scale the whole cell into the 64×64 canvas
+  const scale = Math.max(1, Math.floor(Math.min(W / cellW, H / cellH)));
+  const drawW = cellW * scale;
+  const drawH = cellH * scale;
   const ox = Math.floor((W - drawW) / 2);
   const oy = Math.floor((H - drawH) / 2);
 
+  // Where the glyph bitmap sits inside the cell:
+  const gx0 = -m.left;                // left side bearing
+  const gy0 = baseline - m.ascent;    // top based on baseline
+
     const flipX = document.getElementById("flipX")?.checked ?? false;
 
-    for (let y = 0; y < gh; y++) {
-    for (let x = 0; x < gw; x++) {
-        const srcX = flipX ? (gw - 1 - x) : x;
-        if (glyph.pixels[y][srcX]) {
-        ctx.fillRect(ox + x * scale, oy + y * scale, scale, scale);
-        }
+  for (let y = 0; y < glyph.h; y++) {
+    for (let x = 0; x < glyph.w; x++) {
+      if (!glyph.pixels[y][x]) continue;
+      
+       const cx = flipX ? (glyph.w - 1 - gx0 - x) : (gx0 + x);
+      //const cx = gx0 + x;
+      const cy = gy0 + y;
+      if (cx < 0 || cy < 0 || cx >= cellW || cy >= cellH) continue; // safety
+      ctx.fillRect(ox + cx * scale, oy + cy * scale, scale, scale);
     }
-    }
-
-
+  }
 }
+
 
 
 function setStatus(msg, cls="muted") {
@@ -414,6 +466,8 @@ document.getElementById("file").addEventListener("change", async (e) => {
     // If the user loaded a .gz, this will fail magic check (unless already decompressed).
     const pcf = parsePCF(buf);
 
+    pcf.accel = parseAccelerators(pcf);
+
     const cps = iterCodepoints(pcf.enc)
       .filter(({codepoint}) => !onlyAscii || (codepoint >= 0 && codepoint <= 127))
       .sort((a,b) => a.codepoint - b.codepoint);
@@ -431,7 +485,7 @@ document.getElementById("file").addEventListener("change", async (e) => {
 
       const canvas = document.createElement("canvas");
       canvas.width = 64; canvas.height = 64;
-      renderGlyphToCanvas(canvas, glyph, invert);
+      renderGlyphToCanvas(canvas, glyph, invert, pcf.accel);
 
       const cap = document.createElement("div");
       cap.className = "cap";
