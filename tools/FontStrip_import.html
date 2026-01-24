@@ -1,3 +1,10 @@
+<!--
+
+!"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~
+
+0123456789
+-->
+
 <!doctype html>
 <html lang="en">
 <head>
@@ -47,6 +54,15 @@
           <input id="includeSpaces" type="checkbox" checked />
           <label for="includeSpaces" style="display:inline">Allow glyph width 0? (usually <b>off</b>; checked means keep empty glyphs if present)</label>
         </div>
+        <div class="hint" style="margin-top:8px">
+        <label for="delim" style="display:block;margin:0 0 4px">Delimiter column (per pixel)</label>
+        <select id="delim">
+            <option value="00" selected>00 (black)  → 0x00..</option>
+            <option value="01">01 (dark)   → 0x55..</option>
+            <option value="10">10 (light)  → 0xAA..</option>
+            <option value="11">11 (white)  → 0xFF..</option>
+        </select>
+        </div>
 
         <div style="margin-top:10px" class="row">
           <button id="process" disabled>Process + Encode</button>
@@ -94,6 +110,7 @@
   const dbgEl = $("dbg");
   const msbEl = $("msb");
   const includeSpacesEl = $("includeSpaces");
+  const delimEl = $("delim");
 
   const cvOrig = $("cvOrig");
   const cvPre = $("cvPre");
@@ -150,10 +167,18 @@
 
     // 1) Quantize each pixel to 4 grayscale levels, map to 2-bit values 0..3
     //    Nearest to [0, 85, 170, 255] using thresholds at 42.5, 127.5, 212.5
-    const q = quantizeTo2bpp(w, h, imgData.data);
+    const q = quantizeTo2bpp_detectLevels(w, h, imgData.data);
 
     // 2) Split/compact glyphs based on full-height black separator columns
     const glyphs = splitGlyphsByBlackColumns(q, w, h, includeSpacesEl.checked);
+
+    for (let i = 0; i < glyphs.length; i++) {
+    if (glyphHasAllDelimColumn(glyphs[i], h, delimEl.value)) {
+        console.warn(`Glyph #${i} contains a full delimiter column (may break parsing).`);
+    }
+    }
+
+
 
     // Validate char string vs glyph count
     const chars = [...charsEl.value]; // simple codepoints; assumes user provides matching glyphs
@@ -171,57 +196,54 @@
     renderPreprocessedStrip(glyphs, h);
 
     // 4) Encode to byte array (2bpp, column-major, vertical-serialized)
-    const bytesPerCol = h / 4; // 8->2, 12->3, 16->4
+   
+    const bytesPerCol = h / 4;
     const packMSBFirst = msbEl.checked;
-
+    const delimCol = makeDelimiterColumnBytes(h, delimEl.value); // "00" default
     const fontBytes = [];
     const widths = [];
     const offsets = []; // byte offsets into fontBytes for each glyph
     let byteOffset = 0;
 
     for (let gi = 0; gi < glyphs.length; gi++) {
-      const g = glyphs[gi];
-      widths.push(g.w);
-      offsets.push(byteOffset);
+    const g = glyphs[gi];
 
-      // For each column x, serialize y=0..h-1 pixels (2 bits each) into bytes
-      for (let x = 0; x < g.w; x++) {
+    // encode glyph columns
+    for (let x = 0; x < g.w; x++) {
         const colBytes = packColumn2bpp(g, x, h, packMSBFirst);
-        if (colBytes.length !== bytesPerCol) {
-          // Should not happen if packing is correct
-          console.warn("Unexpected bytes/col", colBytes.length, "expected", bytesPerCol);
-        }
         for (const b of colBytes) fontBytes.push(b);
-        byteOffset += colBytes.length;
-      }
     }
 
-    // 5) Format Arduino code
-    const arrNameData  = `font_2b${h}_data`;
-    const arrNameChars = `font_2b${h}_chars`;
-    const arrNameW     = `font_2b${h}_widths`;
-    const arrNameOff   = `font_2b${h}_offsets`;
+    // encode ONE black delimiter column after each glyph except the last
+    if (gi !== glyphs.length - 1) {
+        for (const b of delimCol) fontBytes.push(b);
+    }
+    }
 
-    const charsForC = (chars.length === glyphs.length)
-      ? chars.map(toCCharLiteral).join(", ")
-      : "// (chars array not emitted due to count mismatch)";
+    const delimByte = byteForRepeated2Bits(parseInt(delimEl.value, 2));
+    const { offsetsCols, widthsCols } =
+    scanGlyphsFromDelimiter(fontBytes, bytesPerCol, delimByte);
+
+
+    // 5) Format Arduino code
+    const offsetsBytes = offsetsCols.map(c => c * bytesPerCol);
+
+     const arrNameData  = `font_2b${h}_data`;
+     const arrNameChars = `font_2b${h}_chars`;
+    const arrNameW     = `font_2b${h}_widths`;
+    const arrNameOffC  = `font_2b${h}_offsets_cols`;
+    const arrNameOffB  = `font_2b${h}_offsets_bytes`;
+    
 
     const arduino =
-`// 2bpp (4-grayscale) font, height=${h}
-// Encoding: column-major, each column is ${bytesPerCol} byte(s) (because ${h} pixels * 2 bits = ${(h*2)} bits = ${bytesPerCol} bytes)
-// Pixel mapping: 00 black, 01 dark-gray, 10 light-gray, 11 white
+    `const uint8_t ${arrNameData}[] PROGMEM = {
+    ${formatHexBytes(fontBytes, 16)}
+    };
 
-const uint8_t ${arrNameData}[] PROGMEM = {
-  ${formatHexBytes(fontBytes, 16)}
-};
-
-${(chars.length === glyphs.length) ? `const uint8_t ${arrNameChars}[] PROGMEM = { ${charsForC} };` : charsForC}
-
-const uint8_t ${arrNameW}[] PROGMEM = { ${widths.join(", ")} };
-// Byte offset of each glyph inside ${arrNameData} (start of glyph data).
-// Each glyph consumes width[g] * ${bytesPerCol} bytes.
-const uint16_t ${arrNameOff}[] PROGMEM = { ${offsets.join(", ")} };
-`;
+    const uint8_t ${arrNameW}[] PROGMEM = { ${widthsCols.join(", ")} };
+    const uint8_t ${arrNameOffC}[] PROGMEM = { ${offsetsCols.join(", ")} };
+    const uint16_t ${arrNameOffB}[] PROGMEM = { ${offsetsBytes.join(", ")} };
+    `;
 
     outEl.textContent = arduino;
     copyBtn.disabled = false;
@@ -259,28 +281,84 @@ const uint16_t ${arrNameOff}[] PROGMEM = { ${offsets.join(", ")} };
     });
   }
 
-  function quantizeTo2bpp(w, h, rgba) {
-    // Returns Uint8Array length w*h with values in {0,1,2,3}
-    const out = new Uint8Array(w * h);
-    for (let i = 0; i < w * h; i++) {
-      const r = rgba[i*4+0], g = rgba[i*4+1], b = rgba[i*4+2], a = rgba[i*4+3];
-      // If alpha present, treat transparent as white (common expectation)
-      const rr = (a === 0) ? 255 : r;
-      const gg = (a === 0) ? 255 : g;
-      const bb = (a === 0) ? 255 : b;
-      // Perceived luminance (sRGB-ish)
-      const lum = Math.round(0.2126 * rr + 0.7152 * gg + 0.0722 * bb);
+  function quantizeTo2bpp_detectLevels(w, h, rgba) {
+  // Build histogram of luminance values in the image
+  const hist = new Uint32Array(256);
+  const lumArr = new Uint8Array(w*h);
 
-      // Nearest to 0,85,170,255 via thresholds
-      let v2;
-      if (lum < 43) v2 = 0;           // ~0%
-      else if (lum < 128) v2 = 1;     // ~33%
-      else if (lum < 213) v2 = 2;     // ~66%
-      else v2 = 3;                    // ~100%
-      out[i] = v2;
-    }
-    return out;
+  for (let i = 0; i < w*h; i++) {
+    const r = rgba[i*4+0], g = rgba[i*4+1], b = rgba[i*4+2], a = rgba[i*4+3];
+    const rr = (a === 0) ? 255 : r;
+    const gg = (a === 0) ? 255 : g;
+    const bb = (a === 0) ? 255 : b;
+    const lum = Math.round(0.2126*rr + 0.7152*gg + 0.0722*bb);
+    lumArr[i] = lum;
+    hist[lum]++;
   }
+
+  // Collect luminance values actually present (ignore super-rare noise)
+  const present = [];
+  for (let v = 0; v < 256; v++) {
+    if (hist[v] > 0) present.push(v);
+  }
+
+  // If we have >= 4 distinct levels, map the 4 most frequent levels to 0..3 by luminance order.
+  // (This matches your strip: black + 2 grays + near-white.)
+  const byFreq = present
+    .map(v => [v, hist[v]])
+    .sort((a,b) => b[1] - a[1]);
+
+  const top = byFreq.slice(0, 4).map(x => x[0]).sort((a,b) => a-b);
+
+  // Fallback if weird image: use thresholds
+  const useTop = (top.length === 4);
+
+  const out = new Uint8Array(w*h);
+  for (let i = 0; i < w*h; i++) {
+    const lum = lumArr[i];
+    let v2;
+    if (useTop) {
+      // map to nearest of the 4 detected representative levels
+      let best = 0, bestD = 1e9;
+      for (let k = 0; k < 4; k++) {
+        const d = Math.abs(lum - top[k]);
+        if (d < bestD) { bestD = d; best = k; }
+      }
+      v2 = best; // 0..3
+    } else {
+      if (lum < 64) v2 = 0;
+      else if (lum < 128) v2 = 1;
+      else if (lum < 192) v2 = 2;
+      else v2 = 3;
+    }
+    out[i] = v2;
+  }
+  return out;
+}
+
+function makeDelimiterColumnBytes(h, delim2bStr) {
+  const bytesPerCol = h / 4;  // 12px -> 3 bytes
+  const v = parseInt(delim2bStr, 2) & 3; // 0..3
+  const b = byteForRepeated2Bits(v);     // 0x00,0x55,0xAA,0xFF
+  return new Array(bytesPerCol).fill(b);
+}
+
+function byteForRepeated2Bits(v2) {
+  // Repeat the 2-bit pattern across the byte: b7..b0 as (v2 v2 v2 v2)
+  // 00->0x00, 01->0x55, 10->0xAA, 11->0xFF
+  switch (v2 & 3) {
+    case 0: return 0x00;
+    case 1: return 0x55;
+    case 2: return 0xAA;
+    case 3: return 0xFF;
+  }
+}
+
+
+function makeAllBlackColumnBytes(h) {
+  const bytesPerCol = h / 4;      // 12px => 3 bytes
+  return new Array(bytesPerCol).fill(0x00);
+}
 
   function splitGlyphsByBlackColumns(q, w, h, keepEmptyGlyphs) {
     // A separator column is "all black" => all q[x,y] == 0 for y in [0..h-1]
@@ -331,6 +409,53 @@ const uint16_t ${arrNameOff}[] PROGMEM = { ${offsets.join(", ")} };
     }
     return { w: gw, px };
   }
+
+function glyphHasAllDelimColumn(g, h, delim2bStr) {
+  const v = parseInt(delim2bStr, 2) & 3;
+  for (let x = 0; x < g.w; x++) {
+    let all = true;
+    for (let y = 0; y < h; y++) {
+      if ((g.px[y*g.w + x] & 3) !== v) { all = false; break; }
+    }
+    if (all) return true;
+  }
+  return false;
+}
+
+
+function scanGlyphsFromDelimiter(fontBytes, bytesPerCol, delimByte) {
+  // Assumes delimiter column is bytesPerCol identical bytes: [delimByte...]
+  const isDelimAt = (i) => {
+    for (let k = 0; k < bytesPerCol; k++) {
+      if (fontBytes[i + k] !== delimByte) return false;
+    }
+    return true;
+  };
+
+  const offsetsCols = [];
+  const widthsCols = [];
+
+  let col = 0;
+  let glyphStartCol = 0;
+
+  for (let i = 0; i <= fontBytes.length - bytesPerCol; i += bytesPerCol, col++) {
+    if (isDelimAt(i)) {
+      offsetsCols.push(glyphStartCol);
+      widthsCols.push(col - glyphStartCol); // width excludes delimiter
+      glyphStartCol = col + 1;              // next glyph starts after delimiter
+    }
+  }
+
+  // last glyph (if stream doesn't end with delimiter)
+  const totalCols = fontBytes.length / bytesPerCol;
+  if (glyphStartCol < totalCols) {
+    offsetsCols.push(glyphStartCol);
+    widthsCols.push(totalCols - glyphStartCol);
+  }
+
+  return { offsetsCols, widthsCols };
+}
+
 
   function renderPreprocessedStrip(glyphs, h) {
     // Concatenate glyphs with a single black separator column between them
