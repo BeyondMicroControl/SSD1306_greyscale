@@ -404,7 +404,7 @@ void setup()
   Serial.begin(115200);
   #ifdef BUTTON_INPUT
     pinMode(SWITCH_1_PIN,INPUT_PULLUP);
-    pinMode(SWITCH_1_PIN,INPUT_PULLUP);
+    pinMode(SWITCH_2_PIN,INPUT_PULLUP);
   #endif
   
   //delay(5000);
@@ -466,6 +466,7 @@ void loop()
     else
     {
       uint8_t btn = read_buttons(&btnStatus);
+      
       uint8_t curr    = btn & 0x0F;                        // current state
       uint8_t changed = (curr ^ (btnStatus >> 4)) & 0x0F;  // delta between current and previous state
       
