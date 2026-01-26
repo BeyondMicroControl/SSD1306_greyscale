@@ -16,7 +16,7 @@ enum FontOrient : uint8_t {
   ORIENT_0   = 0,
   ORIENT_90  = 1,
   ORIENT_180 = 2,
-  ORIENT_270 = 3,
+  ORIENT_270 = 3
 };
 
 typedef struct pgBuf
@@ -106,13 +106,26 @@ static inline void setPixel2bpp(pgBuf* buf, uint8_t page, int16_t xL, int16_t yL
   if (v & 0x02) buf->B[bx] |= m;  // plane B
 }
 
-static int8_t findGlyphIndex(char c)
+static inline int16_t findGlyphIndex(uint8_t c)
 {
-  const uint8_t n = (uint8_t)(sizeof(font_2b12_characters) / sizeof(font_2b12_characters[0]));
-  for (uint8_t i = 0; i < n; i++)
+  if (c == 0x20) return -2; // space: special handling (no glyph stored)
+
+  uint16_t base = 0;
+
+  for (uint8_t i = 0; i < (uint8_t)(sizeof(FONT_RANGES) / sizeof(FONT_RANGES[0])); i++)
   {
-    if ((char)pgm_read_byte(&font_2b12_characters[i]) == c) return (int8_t)i;
+    const uint8_t first = FONT_RANGES[i].first;
+    const uint8_t last  = FONT_RANGES[i].last;
+
+    if (c >= first && c <= last) {
+      const uint16_t idx = base + (uint16_t)(c - first);
+      return (idx < 256) ? (int16_t)idx : -1;
+    }
+
+    base += (uint16_t)(last - first + 1);
+    if (base >= 256) return -1; // guard
   }
+
   return -1;
 }
 
@@ -232,9 +245,7 @@ void setup()
   oled.enableChargePump();
   oled.on();
 
-  // Default orientation (change anytime, then re-render the screen).
-  _pgbuf.orientation = ORIENT_90; // your current use case
-
+  _pgbuf.orientation = ORIENT_90;
   updateScreenData(&_pgbuf);
   
   rtc_init_slots();
