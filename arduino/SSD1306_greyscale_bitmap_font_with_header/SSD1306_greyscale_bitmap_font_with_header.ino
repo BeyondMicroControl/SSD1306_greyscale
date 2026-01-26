@@ -2,10 +2,13 @@
 
 #define TINY4KOLED_WIDTH   64
 #define TINY4KOLED_HEIGHT  32
-//#define TINY4KOLED_MOD     r
+#define TINY4KOLED_MOD     r
 
 #define _SWITCH_DISP_INTERRUPT_FLAG g_toggle_req
 #include "greyscaleOLED_pwm.h"
+#include <Print.h>
+
+
 
 // Runtime-selectable orientation (0, 90, 180, 270 degrees).
 // NOTE: Logical coordinate space depends on orientation:
@@ -222,6 +225,7 @@ static inline uint8_t getBitMSB_progmem(const uint8_t* base, uint16_t bitIndex)
 static inline uint8_t getPix2bpp_MSB_progmem(const uint8_t* colBytes, uint8_t yInGlyph)
 {
   // 2bpp -> 2 bits per pixel, packed MSB-first (matching the JS tool).
+  // NOTE: In this font stream, the 2-bit pixel is stored LSB first, then MSB.
   const uint16_t b0 = (uint16_t)yInGlyph * 2;
   const uint8_t lo = getBitMSB_progmem(colBytes, b0);
   const uint8_t hi = getBitMSB_progmem(colBytes, b0 + 1);
@@ -263,6 +267,142 @@ static void drawGlyph2bppFont(pgBuf* buf, uint8_t page, const FontView& font, ch
   }
 }
 
+class OledFontPrint : public Print {
+public:
+  void begin(pgBuf* b, const FontView& f) {
+    buf = b;
+    font = f;
+    cursorX = cursorY = 0;
+    wrap = true;
+    charSpacing = 1;
+
+    // cached per-font
+    fontH = fontHeightPx(font);
+    spaceW = fontSpaceWidthPx(font);
+    bytesPerCol = fontBytesPerColumn(font);
+  }
+
+  void setPage(uint8_t p) { page = p; }
+  void setCursor(int16_t x, int16_t y) { cursorX = x; cursorY = y; }
+  void setWrap(bool w) { wrap = w; }
+  void setCharSpacing(uint8_t px) { charSpacing = px; }
+
+  int16_t getCursorX() const { return cursorX; }
+  int16_t getCursorY() const { return cursorY; }
+
+  // Core: Print calls this for every byte.
+  size_t write(uint8_t c) override
+  {
+    if (!buf) return 0;
+
+    if (c == '\r') return 1;
+
+    if (c == '\n') {
+      newline();
+      return 1;
+    }
+
+    // Logical screen dims depend on orientation
+    int16_t wL, hL;
+    getLogicalDims(buf->orientation, wL, hL);
+
+    // SPACE: not stored in glyph stream
+    if (c == ' ') {
+      cursorX += spaceW;
+      if (wrap && cursorX >= wL) newline();
+      return 1;
+    }
+
+    // Find glyph index from font ranges
+    const int16_t gi = findGlyphIndex_ranges(font, c);
+    if (gi < 0) {
+      // unsupported glyph: skip (or draw a box if you prefer)
+      return 1;
+    }
+
+    // Locate glyph span (start + width) by scanning delimiter columns
+    uint16_t glyphStart = 0;
+    uint8_t glyphW = 0;
+    if (!getGlyphSpan(font, (uint16_t)gi, glyphStart, glyphW)) {
+      return 1;
+    }
+
+    // Wrap if needed (use glyph width + spacing)
+    if (wrap && (cursorX + glyphW) >= wL) {
+      newline();
+    }
+
+    // Draw glyph pixels into THIS page buffer only (setPixel2bpp checks page Y range)
+    drawGlyphFromStream(glyphStart, glyphW, cursorX, cursorY);
+
+    // Advance caret
+    cursorX += (int16_t)glyphW + (int16_t)charSpacing;
+
+    return 1;
+  }
+
+private:
+  pgBuf* buf = nullptr;
+  FontView font{nullptr, 0};
+  uint8_t page = 0;
+
+  int16_t cursorX = 0;
+  int16_t cursorY = 0;
+
+  bool wrap = true;
+  uint8_t charSpacing = 0;
+
+  // cached font parameters
+  uint8_t fontH = 12;
+  uint8_t spaceW = 3;
+  uint8_t bytesPerCol = 3;
+
+  void newline()
+  {
+    cursorX = 0;
+    cursorY += (int16_t)fontH - 2; // line gap 1px
+  }
+
+  // Draw glyph whose first column starts at glyphStart (byte offset inside font blob)
+  void drawGlyphFromStream(uint16_t glyphStart, uint8_t glyphW, int16_t x0, int16_t y0)
+  {
+    // Each column = bytesPerCol bytes, packed MSB-first
+    // Each pixel uses 2 bits (but note: your working decode is lo first then hi)
+    for (uint8_t gx = 0; gx < glyphW; gx++) {
+      const uint16_t colOff = glyphStart + (uint16_t)gx * bytesPerCol;
+      const uint8_t* colPtr = font.bytes + colOff; // PROGMEM base + offset
+
+      for (uint8_t gy = 0; gy < fontH; gy++) {
+        const uint16_t b0 = (uint16_t)gy * 2;
+
+        // IMPORTANT: your corrected bit order (lo then hi)
+        const uint8_t lo = getBitMSB_progmem(colPtr, b0 + 0);
+        const uint8_t hi = getBitMSB_progmem(colPtr, b0 + 1);
+        const uint8_t v  = (hi << 1) | lo; // 0..3
+
+        if (v == 0) continue;
+
+        const int16_t xL = x0 + (int16_t)gx;
+        const int16_t yL = y0 + (int16_t)gy;
+
+        // write into page buffer (handles orientation + page clipping)
+        setPixel2bpp(buf, page, xL, yL, v);
+      }
+    }
+  }
+};
+
+
+static OledFontPrint oledText;
+static const FontView font12 = { font_2b12, sizeof(font_2b12) }; // adjust symbol name to your header dataset
+
+
+
+
+
+
+
+
 
 void UpdateOLED(pgBuf* buf, uint8_t page)
 {
@@ -283,30 +423,60 @@ void UpdateOLED(pgBuf* buf, uint8_t page)
 
 static void updateScreenData(pgBuf* buf)
 {
-  for (uint8_t page = 0; page < 4; page++) 
+  oledText.begin(buf, font12);
+
+  for (uint8_t page = 0; page < 4; page++)
   {
-      // TODO: put here a function that updates screen data (page-by-page)
+    memset(buf->A, 0, 64);
+    memset(buf->B, 0, 64);
+
+    oledText.setPage(page);
+
+    uint8_t m = 2;
+    switch(m)
+    {
+      case 0:
+        oledText.setCursor(2, 43);
+        oledText.println("Tools");
+        oledText.print("Setup");
+        break;
+      case 1:
+        oledText.setCursor(2, 1);
+        oledText.print("INPUT");
+        oledText.setCursor(1, 9);
+        oledText.print("setup");
+        oledText.setCursor(7, 25);
+        oledText.print("USB");
+        oledText.setCursor(0, 36);
+        oledText.setCharSpacing(0);
+        oledText.print("AUDIO");
+        oledText.setCursor(4, 48);
+        oledText.setCharSpacing(1);
+        oledText.print("MIDI");
+        break;
+       case 2:
+         oledText.setCursor(7, 1);
+        oledText.print("USB");
+        oledText.setCursor(1, 9);
+        oledText.print("setup");
         
-      memset(buf->A,0, 64); memset(buf->B, 0, 64);  // clear entire page buffer
+        oledText.setCursor(7, 25);
+        oledText.print("USB");
+        oledText.setCursor(0, 36);
+        oledText.setCharSpacing(0);
+        oledText.print("AUDIO");
+        oledText.setCursor(4, 48);
+        oledText.setCharSpacing(1);
+        oledText.print("MIDI");
+        break;
+       
+    }
 
-      // Example test pattern: 4 corners in the *current* logical coordinate space.
-      // (setPixel2bpp will only affect the current page if the pixel's y falls inside it.)
-      int16_t wL, hL;
-      getLogicalDims(buf->orientation, wL, hL);
-      //setPixel2bpp(buf, page, 0,      0,      3); // white: top-left
-      //setPixel2bpp(buf, page, wL - 1, 0,      3); // white: top-right
-      //setPixel2bpp(buf, page, 0,      hL - 1, 1); // dark-grey: bottom-left
-      //setPixel2bpp(buf, page, wL - 1, hL - 1, 2); // light-grey: bottom-right
-
-      const FontView f12 = { font_2b12, (uint16_t)sizeof(font_2b12) };
-      drawGlyph2bppFont(buf, page, f12, 'F', /*x=*/0, /*y=*/0);
-      drawGlyph2bppFont(buf, page, f12, 'r', /*x=*/5, /*y=*/0);
-      drawGlyph2bppFont(buf, page, f12, 'e', /*x=*/9, /*y=*/0);
-      drawGlyph2bppFont(buf, page, f12, 'd', /*x=*/14, /*y=*/0);
-      
-      UpdateOLED(buf,page);
+    
+    UpdateOLED(buf, page);
   }
 }
+
 
 
 void setup()
@@ -317,7 +487,7 @@ void setup()
   oled.enableChargePump();
   oled.on();
 
-  _pgbuf.orientation = ORIENT_90;
+  _pgbuf.orientation = ORIENT_270;
   updateScreenData(&_pgbuf);
   
   rtc_init_slots();
