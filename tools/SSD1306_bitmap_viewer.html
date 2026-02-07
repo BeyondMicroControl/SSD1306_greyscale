@@ -553,8 +553,11 @@ function setPosFromMouse(ev) {
   const px = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--px')) || 10;
   const x = Math.floor((ev.clientX - rect.left) / px);
   const y = Math.floor((ev.clientY - rect.top) / px);
-  document.getElementById("posX").value = x;
-  document.getElementById("posY").value = y;
+  const xo = 16;
+  const yo = 16;
+
+  document.getElementById("posX").value = x-16;
+  document.getElementById("posY").value = y-16;
 }
 
 function updateStats() {
