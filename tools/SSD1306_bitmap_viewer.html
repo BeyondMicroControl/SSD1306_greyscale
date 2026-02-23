@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="en">
+<head>
+
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SSD1306 Bitmap Visualizer & Composer</title>
+<style>
+  :root { --px: 10; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
+  h1 { font-size: 18px; margin: 0 0 10px; }
+  .row { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .panel { border: 1px solid #ddd; border-radius: 10px; padding: 12px; min-width: 320px; }
+  .panel h2 { font-size: 14px; margin: 0 0 10px; }
+  .grid { display: grid; gap: 8px; }
+  .grid.cols2 { grid-template-columns: 1fr 1fr; }
+  label { font-size: 12px; display: inline-flex; gap: 6px; align-items: center; }
+  input[type="number"] { width: 90px; }
+  textarea { width: 100%; height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+  .btnbar { display: flex; gap: 8px; flex-wrap: wrap; }
+  button { padding: 8px 10px; border-radius: 10px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
+  button:hover { background: #f6f6f6; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .muted { color: #666; font-size: 12px; }
+  .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; border: 1px solid #ddd; padding: 1px 6px; border-radius: 6px; background: #fafafa; }
+  canvas { border: 1px solid #000; image-rendering: pixelated; }
+  .stat { font-size: 12px; margin-top: 8px; }
+  .warn { color: #b45309; }
+  .ok { color: #166534; }
+  details summary { cursor: pointer; font-size: 12px; }
+</style>
+
+<style>
+
+  :root { --px: 10; }
+  body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
+  h1 { font-size: 18px; margin: 0 0 10px; }
+  .row { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .panel { border: 1px solid #ddd; border-radius: 10px; padding: 12px; min-width: 320px; }
+  .panel h2 { font-size: 14px; margin: 0 0 10px; }
+  .grid { display: grid; gap: 8px; }
+  .grid.cols2 { grid-template-columns: 1fr 1fr; }
+  label { font-size: 12px; display: inline-flex; gap: 6px; align-items: center; }
+  input[type="number"] { width: 90px; }
+  textarea { width: 100%; height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12px; }
+  .btnbar { display: flex; gap: 8px; flex-wrap: wrap; }
+  button { padding: 8px 10px; border-radius: 10px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
+  button:hover { background: #f6f6f6; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .muted { color: #666; font-size: 12px; }
+  .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; border: 1px solid #ddd; padding: 1px 6px; border-radius: 6px; background: #fafafa; }
+  canvas { border: 1px solid #000; image-rendering: pixelated; }
+  .stat { font-size: 12px; margin-top: 8px; }
+  .warn { color: #b45309; }
+  .ok { color: #166534; }
+  details summary { cursor: pointer; font-size: 12px; }
+
+
+.split { display:flex; gap:12px; align-items:stretch; }
+.splitcol { flex:1 1 0; min-width:0; }
+.split textarea { width:100%; min-height:180px; }
+
+</style>
+</head>
+<body>
+<h1>SSD1306 bitmap visualizer & composer</h1>
+<div class="row">
+  <div class="panel" style="flex: 1 1 440px;">
+    <h2>1) Screen</h2>
+
+    <div class="grid">
+      <div class="grid cols2">
+        <div>
+          <div class="muted" style="margin-bottom:6px;">Common SSD1306 resolutions</div>
+          <label><input type="radio" name="screenPreset" value="128x64" checked> 128×64</label>
+          <label><input type="radio" name="screenPreset" value="128x32"> 128×32</label>
+          <label><input type="radio" name="screenPreset" value="96x16"> 96×16</label>
+          <label><input type="radio" name="screenPreset" value="64x32"> 64×32</label>
+          <label><input type="radio" name="screenPreset" value="custom"> custom</label>
+        </div>
+        <div>
+          <div class="muted" style="margin-bottom:6px;">Custom screen</div>
+          <label>W <input id="screenW" type="number" min="1" value="128"></label>
+          <label>H <input id="screenH" type="number" min="8" step="8" value="64"></label>
+          <div class="muted">Height must be multiple of 8 (SSD1306 pages).</div>
+        </div>
+      </div>
+
+      <div class="grid cols2">
+        <div>
+          <label>Zoom <input id="zoom" type="range" min="2" max="10" value="6"></label>
+          <span class="muted">Tip: click the canvas to place the snippet at that pixel.</span>
+        </div>
+        <div>
+          <label><input id="showGrid" type="checkbox" checked> show pixel grid</label>
+          <label><input id="invert" type="checkbox"> invert (display-only)</label>
+        
+          <label><input id="greyscale" type="checkbox"> greyscale (2 bitplanes)</label>
+          <label><input id="plane1MSB" type="checkbox" checked> bitplane 1 is MSB</label>
+</div>
+      </div>
+
+      <canvas id="canvas"></canvas>
+
+      <div class="btnbar">
+        <button id="clearBtn">Clear screen</button>
+        <button id="undoBtn" disabled>Undo</button>
+        <button id="redoBtn" disabled>Redo</button>
+        <button id="saveBtn">Save Arduino file</button>
+      </div>
+
+      <div class="stat" id="screenStat"></div>
+    </div>
+  </div>
+
+  <div class="panel" style="flex: 1 1 440px;">
+    <h2>2) Bitmap snippet (paste C/Arduino data here)</h2>
+    
+    <div class="split">
+      <div class="splitcol">
+        <div class="muted" style="margin-bottom:6px;">Bitplane 1</div>
+        <textarea id="snippet"></textarea>
+      </div>
+      <div class="splitcol">
+        <div class="muted" style="margin-bottom:6px;">Bitplane 2</div>
+        <textarea id="snippet2"></textarea>
+      </div>
+    </div>
+
+
+    <div class="grid cols2" style="margin-top:10px;">
+      <div>
+        <div class="muted" style="margin-bottom:6px;">Snippet geometry</div>
+        <label>W <input id="bmpW" type="number" min="1" value="64"></label>
+        <label>H <input id="bmpH" type="number" min="8" step="8" value="32"></label>
+        <div class="muted">If wrong, auto-detect tries to guess.</div>
+      </div>
+      <div>
+        <div class="muted" style="margin-bottom:6px;">Place on screen</div>
+        <label>X <input id="posX" type="number" value="0"></label>
+        <label>Y <input id="posY" type="number" value="0"></label>
+        <div class="muted">Y is in pixels (not pages).</div>
+      </div>
+    </div>
+
+    <div class="grid cols2" style="margin-top:10px;">
+      <div>
+        <div class="muted" style="margin-bottom:6px;">Compose operation</div>
+        <label><input type="radio" name="op" value="OR" checked> OR</label>
+        <label><input type="radio" name="op" value="AND"> AND</label>
+        <label><input type="radio" name="op" value="XOR"> XOR</label>
+        <label><input type="radio" name="op" value="REPLACE"> REPLACE</label>
+      </div>
+      <div>
+        <div class="muted" style="margin-bottom:6px;">Actions</div>
+        <div class="btnbar">
+          <button id="autoBtn">Auto-detect</button>
+          <button id="previewBtn">Preview (no commit)</button>
+          <button id="commitBtn">Commit to screen</button>
+        </div>
+      </div>
+    </div>
+
+    <details style="margin-top:10px;">
+      <summary>Notes / supported formats</summary>
+      <div class="muted" style="margin-top:8px; line-height: 1.4;">
+        Paste things like <span class="kbd">0x3F, 12, 255</span>, with or without braces, PROGMEM, etc.
+        Non-numbers are ignored. Height must be multiple of 8 for SSD1306-style page layout.
+      </div>
+    </details>
+
+    <div class="stat" id="snippetStat"></div>
+  </div>
+</div>
+
+<script>
+// --------- parsing helpers ----------
+function parseByteArray(text) {
+  // Accept: 0xNN, decimal, binary (0b...), ignore everything else.
+  const out = [];
+  const re = /0x[0-9a-fA-F]+|0b[01]+|\b\d+\b/g;
+  const m = text.match(re) || [];
+  for (const t of m) {
+    let v = 0;
+    if (t.startsWith("0x") || t.startsWith("0X")) v = parseInt(t, 16);
+    else if (t.startsWith("0b") || t.startsWith("0B")) v = parseInt(t.slice(2), 2);
+    else v = parseInt(t, 10);
+    if (!Number.isFinite(v)) continue;
+    v = ((v % 256) + 256) % 256;
+    out.push(v);
+  }
+  return out;
+}
+
+const SCREEN_PRESETS = [
+  { w: 128, h: 64 },
+  { w: 128, h: 32 },
+  { w: 96,  h: 16 },
+  { w: 64,  h: 32 },
+];
+
+function bytesForWH(w,h){ return w * (h>>3); }
+
+function guessScreenFromBytes(nBytes) {
+  // Prefer exact matches
+  for (const p of SCREEN_PRESETS) {
+    if (bytesForWH(p.w, p.h) === nBytes) return { ...p, exact: true };
+  }
+  // best approximate by aspect similarity (fallback)
+  let best = null, bestScore = Infinity;
+  for (const p of SCREEN_PRESETS) {
+    const d = Math.abs(bytesForWH(p.w,p.h) - nBytes);
+    if (d < bestScore) { bestScore = d; best = p; }
+  }
+  return best ? { ...best, exact: false } : null;
+}
+
+function guessBitmapGeometryFromBytes(nBytes) {
+  // Heuristic: SSD1306 bitmaps are column-major, height multiple of 8.
+  // Try plausible heights and solve width = nBytes / pages.
+  const heights = [64, 32, 24, 16, 8];
+  for (const h of heights) {
+    const pages = h >> 3;
+    if (pages <= 0) continue;
+    if (nBytes % pages === 0) {
+      const w = nBytes / pages;
+      if (w >= 1 && w <= 512) return { w, h, exact: true };
+    }
+  }
+  // fallback: assume 8px height sprite
+  return { w: Math.max(1, nBytes), h: 8, exact: false };
+}
+
+// --------- state ----------
+let screenW = 128, screenH = 64;
+let screenA = new Uint8Array(bytesForWH(screenW, screenH));
+let screenB = new Uint8Array(bytesForWH(screenW, screenH));
+let preview = null; // {a:Uint8Array,b:Uint8Array} or null
+
+let undoStack = [];
+let redoStack = [];
+
+function cloneState() {
+  return { a: new Uint8Array(screenA), b: new Uint8Array(screenB) };
+}
+function restoreState(st) {
+  screenA = new Uint8Array(st.a);
+  screenB = new Uint8Array(st.b);
+}
+
+function pushUndo() {
+  undoStack.push(cloneState());
+  if (undoStack.length > 100) undoStack.shift();
+  redoStack = [];
+  updateUndoRedoButtons();
+}
+
+function doUndo() {
+  if (!undoStack.length) return;
+  redoStack.push(cloneState());
+  const st = undoStack.pop();
+  restoreState(st);
+  preview = null;
+  updateUndoRedoButtons();
+  render();
+}
+
+function doRedo() {
+  if (!redoStack.length) return;
+  undoStack.push(cloneState());
+  const st = redoStack.pop();
+  restoreState(st);
+  preview = null;
+  updateUndoRedoButtons();
+  render();
+}
+
+function updateUndoRedoButtons() {
+  document.getElementById("undoBtn").disabled = undoStack.length === 0;
+  document.getElementById("redoBtn").disabled = redoStack.length === 0;
+}
+
+function idxFor(x, y) {
+  const page = (y >> 3);
+  return page * screenW + x;
+}
+
+function getBit(buf, x, y) {
+  if (x < 0 || y < 0 || x >= screenW || y >= screenH) return 0;
+  const b = buf[idxFor(x, y)];
+  return (b >> (y & 7)) & 1;
+}
+
+function setBit(buf, x, y, on) {
+  if (x < 0 || y < 0 || x >= screenW || y >= screenH) return;
+  const i = idxFor(x, y);
+  const mask = 1 << (y & 7);
+  if (on) buf[i] |= mask;
+  else buf[i] &= (~mask) & 0xff;
+}
+
+function currentOp() {
+  const r = document.querySelector('input[name="op"]:checked');
+  return r ? r.value : "OR";
+}
+
+function opApply(dstBit, srcBit, op) {
+  switch (op) {
+    case "AND": return dstBit & srcBit;
+    case "OR": return dstBit | srcBit;
+    case "XOR": return dstBit ^ srcBit;
+    case "REPLACE": return srcBit;
+    default: return dstBit | srcBit;
+  }
+}
+
+function normalizeSnippetBytes(bytes, need) {
+  if (!bytes.length) return new Array(need).fill(0);
+  if (bytes.length < need) {
+    const padded = bytes.slice();
+    while (padded.length < need) padded.push(0);
+    return padded;
+  }
+  if (bytes.length > need) return bytes.slice(0, need);
+  return bytes;
+}
+
+function getSnippetConfig(autoFixBytesLen = true) {
+  const bytes1raw = parseByteArray(document.getElementById("snippet").value);
+  const bytes2raw = parseByteArray(document.getElementById("snippet2").value);
+
+  let bmpW = parseInt(document.getElementById("bmpW").value, 10);
+  let bmpH = parseInt(document.getElementById("bmpH").value, 10);
+  if (!Number.isFinite(bmpW) || bmpW <= 0) bmpW = screenW;
+  if (!Number.isFinite(bmpH) || bmpH <= 0) bmpH = screenH;
+  if (bmpH % 8 !== 0) bmpH = Math.max(8, Math.round(bmpH / 8) * 8);
+
+  const need = bytesForWH(bmpW, bmpH);
+
+  let bytes1 = bytes1raw, bytes2 = bytes2raw;
+  if (autoFixBytesLen) {
+    bytes1 = normalizeSnippetBytes(bytes1raw, need);
+    bytes2 = normalizeSnippetBytes(bytes2raw, need);
+  }
+
+  const hasAny = (bytes1raw.length > 0) || (bytes2raw.length > 0);
+  return { hasAny, bytes1, bytes2, bytes1raw, bytes2raw, bmpW, bmpH, need };
+}
+
+function composeSnippetInto(dstA, dstB, snippetA, snippetB, bmpW, bmpH, posX, posY, op) {
+  const pages = (bmpH >> 3);
+  for (let x = 0; x < bmpW; x++) {
+    for (let page = 0; page < pages; page++) {
+      const srcByteA = snippetA[page * bmpW + x] ?? 0;
+      const srcByteB = snippetB[page * bmpW + x] ?? 0;
+
+      for (let bit = 0; bit < 8; bit++) {
+        const tx = posX + x;
+        const ty = posY + page * 8 + bit;
+        if (tx < 0 || ty < 0 || tx >= screenW || ty >= screenH) continue; // clip
+
+        const srcBitA = (srcByteA >> bit) & 1;
+        const srcBitB = (srcByteB >> bit) & 1;
+
+        const dstBitA = getBit(dstA, tx, ty);
+        const dstBitB = getBit(dstB, tx, ty);
+
+        setBit(dstA, tx, ty, opApply(dstBitA, srcBitA, op));
+        setBit(dstB, tx, ty, opApply(dstBitB, srcBitB, op));
+      }
+    }
+  }
+}
+
+function makePreview(bytes1, bytes2, bmpW, bmpH, posX, posY, op) {
+  const tmpA = new Uint8Array(screenA);
+  const tmpB = new Uint8Array(screenB);
+  composeSnippetInto(tmpA, tmpB, bytes1, bytes2, bmpW, bmpH, posX, posY, op);
+  return { a: tmpA, b: tmpB };
+}
+
+// --------- rendering ----------
+function render() {
+  const canvas = document.getElementById("canvas");
+  const ctx = canvas.getContext("2d");
+
+  const px = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--px')) || 10;
+  canvas.width  = screenW * px;
+  canvas.height = screenH * px;
+
+  const showGrid = document.getElementById("showGrid").checked;
+  const invert = document.getElementById("invert").checked;
+  const greyscale = document.getElementById("greyscale").checked;
+  const plane1MSB = document.getElementById("plane1MSB").checked;
+
+  const bufA = preview ? preview.a : screenA;
+  const bufB = preview ? preview.b : screenB;
+
+  // background (white "OLED off" look in this editor)
+  ctx.fillStyle = "rgb(255 255 255)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // draw pixels
+  for (let y = 0; y < screenH; y++) {
+    for (let x = 0; x < screenW; x++) {
+      const b1 = getBit(bufA, x, y);
+      const b2 = getBit(bufB, x, y);
+
+      if (!greyscale) {
+        let on = (b1 | b2) === 1;
+        if (invert) on = !on;
+        if (on) {
+          ctx.fillStyle = "rgb(0 0 0)";
+          ctx.fillRect(x * px, y * px, px, px);
+        }
+      } else {
+        let v = plane1MSB ? ((b1 << 1) | b2) : ((b2 << 1) | b1); // 0..3
+        if (invert) v = 3 - v;
+
+        // 0 black, 1 dark grey, 2 light grey, 3 white
+        if (v === 3) continue;
+        if (v === 0) ctx.fillStyle = "rgb(0 0 0)";
+        else if (v === 1) ctx.fillStyle = "rgb(85 85 85)";
+        else ctx.fillStyle = "rgb(170 170 170)";
+        ctx.fillRect(x * px, y * px, px, px);
+      }
+    }
+  }
+
+  // grid (optional)
+  if (showGrid && px >= 6) {
+    ctx.strokeStyle = "rgba(0,0,0,0.15)";
+    ctx.lineWidth = 1;
+    for (let x = 0; x <= screenW; x++) {
+      ctx.beginPath();
+      ctx.moveTo(x * px + 0.5, 0);
+      ctx.lineTo(x * px + 0.5, canvas.height);
+      ctx.stroke();
+    }
+    for (let y = 0; y <= screenH; y++) {
+      ctx.beginPath();
+      ctx.moveTo(0, y * px + 0.5);
+      ctx.lineTo(canvas.width, y * px + 0.5);
+      ctx.stroke();
+    }
+  }
+
+  updateStats();
+}
+
+// --------- UI actions ----------
+function applyPreset(value) {
+  const custom = (value === "custom");
+  document.getElementById("screenW").disabled = !custom;
+  document.getElementById("screenH").disabled = !custom;
+
+  if (!custom) {
+    const [w,h] = value.split("x").map(n => parseInt(n,10));
+    if (w && h) {
+      document.getElementById("screenW").value = w;
+      document.getElementById("screenH").value = h;
+    }
+  }
+  setScreenFromInputs();
+}
+
+function setScreenFromInputs() {
+  let w = parseInt(document.getElementById("screenW").value, 10) || 128;
+  let h = parseInt(document.getElementById("screenH").value, 10) || 64;
+  if (h % 8 !== 0) h = Math.max(8, Math.round(h / 8) * 8);
+
+  screenW = w;
+  screenH = h;
+
+  screenA = new Uint8Array(bytesForWH(screenW, screenH));
+  screenB = new Uint8Array(bytesForWH(screenW, screenH));
+  preview = null;
+  undoStack = [];
+  redoStack = [];
+  updateUndoRedoButtons();
+
+  // also nudge snippet defaults
+  document.getElementById("bmpW").value = Math.min(parseInt(document.getElementById("bmpW").value,10)||w, w);
+  document.getElementById("bmpH").value = Math.min(parseInt(document.getElementById("bmpH").value,10)||h, h);
+
+  var e = document.getElementById("zoom");
+    const v = parseInt(e.value,6) || 6;
+    document.documentElement.style.setProperty("--px", String(v));
+
+  render();
+}
+
+function autoDetect() {
+  // Use whichever plane has data; prefer plane1
+  const b1 = parseByteArray(document.getElementById("snippet").value);
+  const b2 = parseByteArray(document.getElementById("snippet2").value);
+  const n = b1.length ? b1.length : b2.length;
+  if (!n) { updateStats(); return; }
+
+  // 1) guess screen (full screen byte length match)
+  const gS = guessScreenFromBytes(n);
+  if (gS && gS.exact) {
+    const presetValue = `${gS.w}x${gS.h}`;
+    const radios = [...document.querySelectorAll('input[name="screenPreset"]')];
+    const found = radios.find(r => r.value === presetValue);
+    if (found) found.checked = true;
+    else radios.find(r => r.value === "custom").checked = true;
+    document.getElementById("screenW").value = gS.w;
+    document.getElementById("screenH").value = gS.h;
+    applyPreset(found ? presetValue : "custom");
+  }
+
+  // 2) guess snippet geometry
+  const gB = guessBitmapGeometryFromBytes(n);
+  document.getElementById("bmpW").value = gB.w;
+  document.getElementById("bmpH").value = gB.h;
+
+  updateStats();
+  previewSnippet();
+}
+
+function previewSnippet() {
+  const { hasAny, bytes1, bytes2, bmpW, bmpH } = getSnippetConfig(true);
+  const posX = parseInt(document.getElementById("posX").value, 10) || 0;
+  const posY = parseInt(document.getElementById("posY").value, 10) || 0;
+  if (!hasAny) { preview = null; render(); return; }
+  preview = makePreview(bytes1, bytes2, bmpW, bmpH, posX, posY, currentOp());
+  render();
+}
+
+function commitSnippet() {
+  const { hasAny, bytes1, bytes2, bmpW, bmpH } = getSnippetConfig(true);
+  const posX = parseInt(document.getElementById("posX").value, 10) || 0;
+  const posY = parseInt(document.getElementById("posY").value, 10) || 0;
+  if (!hasAny) return;
+  pushUndo();
+  composeSnippetInto(screenA, screenB, bytes1, bytes2, bmpW, bmpH, posX, posY, currentOp());
+  preview = null;
+  render();
+}
+
+function clearScreen() {
+  pushUndo();
+  screenA.fill(0);
+  screenB.fill(0);
+  preview = null;
+  render();
+}
+
+function setPosFromMouse(ev) {
+  const canvas = document.getElementById("canvas");
+  const rect = canvas.getBoundingClientRect();
+  const px = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--px')) || 10;
+  const x = Math.floor((ev.clientX - rect.left) / px);
+  const y = Math.floor((ev.clientY - rect.top) / px);
+  const xo = 16;
+  const yo = 16;
+
+  document.getElementById("posX").value = x-16;
+  document.getElementById("posY").value = y-16;
+}
+
+function updateStats() {
+  const sBytes = bytesForWH(screenW, screenH);
+  const { bytes1raw, bytes2raw, bmpW, bmpH, need } = getSnippetConfig(false);
+
+  const lines = [];
+  lines.push(`Screen: ${screenW}×${screenH} => ${sBytes} bytes per plane (pages=${screenH>>3}).`);
+  lines.push(`Snippet geometry: ${bmpW}×${bmpH} => ${need} bytes expected per plane.`);
+  lines.push(`Plane1: ${bytes1raw.length} bytes, Plane2: ${bytes2raw.length} bytes.`);
+
+  const gs = document.getElementById("greyscale").checked;
+  const msb = document.getElementById("plane1MSB").checked ? "plane1" : "plane2";
+  lines.push(`Display mode: ${gs ? "greyscale (2bpp)" : "black/white"}; MSB: ${msb}.`);
+
+  document.getElementById("screenStat").textContent = lines.join(" ");
+}
+
+function downloadArduino() {
+  const name = "bitmap";
+  const w = screenW, h = screenH;
+
+  const bytesA = Array.from(screenA);
+  const bytesB = Array.from(screenB);
+
+  function hex2(v) { return "0x" + v.toString(16).padStart(2, "0"); }
+
+  function formatArray(bytes) {
+    const lines = [];
+    for (let i = 0; i < bytes.length; i += 16) {
+      lines.push("  " + bytes.slice(i, i + 16).map(hex2).join(", ") + (i + 16 < bytes.length ? "," : ""));
+    }
+    return lines.join("\n");
+  }
+
+  const plane1MSB = document.getElementById("plane1MSB").checked;
+
+  const out =
+`// Generated by SSD1306 Bitmap Visualizer & Composer
+// Screen: ${w}x${h}
+// Two bitplanes (same geometry). For greyscale (2bpp), combine bits as:
+// value = (MSB<<1) | LSB  where MSB is ${plane1MSB ? "plane1" : "plane2"}.
+// Levels: 0=black, 1=dark grey, 2=light grey, 3=white
+
+#pragma once
+#include <Arduino.h>
+
+const uint8_t ${name}_w = ${w};
+const uint8_t ${name}_h = ${h};
+
+const uint8_t PROGMEM ${name}_plane1[] = {
+${formatArray(bytesA)}
+};
+
+const uint8_t PROGMEM ${name}_plane2[] = {
+${formatArray(bytesB)}
+};
+`;
+
+  const blob = new Blob([out], { type: "text/plain;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${name}_${w}x${h}_2plane.h`;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 0);
+}
+
+// --------- init ----------
+(function init() {
+  // presets
+  document.querySelectorAll('input[name="screenPreset"]').forEach(r => {
+    r.addEventListener("change", (e) => applyPreset(e.target.value));
+  });
+
+  document.getElementById("screenW").addEventListener("change", () => {
+    document.querySelector('input[name="screenPreset"][value="custom"]').checked = true;
+    applyPreset("custom");
+  });
+  document.getElementById("screenH").addEventListener("change", () => {
+    document.querySelector('input[name="screenPreset"][value="custom"]').checked = true;
+    applyPreset("custom");
+  });
+
+  document.getElementById("zoom").addEventListener("input", (e) => {
+    const v = parseInt(e.target.value,6) || 6;
+    document.documentElement.style.setProperty("--px", String(v));
+    render();
+  });
+
+  document.getElementById("showGrid").addEventListener("change", render);
+  document.getElementById("invert").addEventListener("change", render);
+  document.getElementById("greyscale").addEventListener("change", render);
+  document.getElementById("plane1MSB").addEventListener("change", render);
+
+  document.getElementById("snippet").addEventListener("input", () => { previewSnippet(); });
+  document.getElementById("snippet2").addEventListener("input", () => { previewSnippet(); });
+
+  ["bmpW","bmpH","posX","posY"].forEach(id => {
+    document.getElementById(id).addEventListener("input", previewSnippet);
+  });
+  document.querySelectorAll('input[name="op"]').forEach(r => r.addEventListener("change", previewSnippet));
+
+  document.getElementById("autoBtn").addEventListener("click", autoDetect);
+  document.getElementById("previewBtn").addEventListener("click", previewSnippet);
+  document.getElementById("commitBtn").addEventListener("click", commitSnippet);
+  document.getElementById("clearBtn").addEventListener("click", clearScreen);
+  document.getElementById("undoBtn").addEventListener("click", doUndo);
+  document.getElementById("redoBtn").addEventListener("click", doRedo);
+  document.getElementById("saveBtn").addEventListener("click", downloadArduino);
+
+  document.getElementById("canvas").addEventListener("mousedown", (ev) => {
+    setPosFromMouse(ev);
+    if (ev.shiftKey) commitSnippet();
+    else previewSnippet();
+  });
+
+  window.addEventListener("keydown", (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && (e.key === "z" || e.key === "Z")) {
+      e.preventDefault();
+      if (e.shiftKey) doRedo(); else doUndo();
+    } else if (mod && (e.key === "y" || e.key === "Y")) {
+      e.preventDefault();
+      doRedo();
+    } else if (e.key === "Escape") {
+      preview = null;
+      render();
+    }
+  });
+
+  // default: 128x64 preset
+  applyPreset("128x64");
+  render();
+})();
+</script>
+</body>
+</html>
