@@ -32,8 +32,8 @@ GND ━━━━━━━━━━━━━━━━━━━━━━━━━�
 #define TINY4KOLED_HEIGHT  32
 #define TINY4KOLED_MOD   r
 
-#define SWITCH_1_PIN A8
-#define SWITCH_2_PIN A9
+#define SWITCH_1_PIN 10
+#define SWITCH_2_PIN 12
 
 #define _SWITCH_DISP_INTERRUPT_FLAG g_toggle_req
 #include "greyscaleOLED_pwm.h"
